@@ -26,6 +26,7 @@ const ROUTER_API_BASES: &[&str] = &[
 ];
 
 const LEGACY_API_BASE: &str = "https://cschat.ccccocccc.cc";
+const CSAC_LEGACY_BASE: &str = "https://csac.ccccocccc.cc";
 const PRIMARY_RPC_BASE: &str = "https://cschat.ccccocccc.cc/web/rpc";
 
 static HTTP: Lazy<Client> = Lazy::new(|| {
@@ -53,6 +54,33 @@ static CHALLENGE_RE: Lazy<Regex> = Lazy::new(|| {
 
 static TO_NUMBERS_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"toNumbers\("([0-9a-fA-F]+)"\)"#).expect("valid toNumbers regex"));
+
+static GROUP_ITEM_START_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)<div\s+class=["'][^"']*\bgroup-item\b[^"']*["'][^>]*>"#)
+        .expect("valid group item regex")
+});
+
+static GROUP_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)<div\s+class=["'][^"']*\bgroup-name\b[^"']*["'][^>]*>(.*?)</div>"#)
+        .expect("valid group name regex")
+});
+
+static GROUP_INTRO_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)<div\s+class=["'][^"']*\bgroup-intro\b[^"']*["'][^>]*>(.*?)</div>"#)
+        .expect("valid group intro regex")
+});
+
+static GROUP_ID_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)(?:群组\s*ID\s*[：:]\s*|group_view\.php\?rid=)(\d+)"#)
+        .expect("valid group id regex")
+});
+
+static GROUP_VIEW_LINK_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)<a\b[^>]*href=["'][^"']*group_view\.php\?rid=(\d+)[^"']*["'][^>]*>(.*?)</a>"#,
+    )
+    .expect("valid group view link regex")
+});
 
 #[derive(Debug, Deserialize)]
 struct ApiRequest {
@@ -126,10 +154,11 @@ async fn api_request(req: ApiRequest) -> Result<ApiResponse, String> {
                     remember_response_cookies(&base, retry.headers())?;
                     let retry_status = retry.status().as_u16();
                     let retry_text = retry.text().await.map_err(|err| err.to_string())?;
-                    let retry_data = parse_response_text(&retry_text, retry_status, &endpoint.url);
+                    let retry_data =
+                        parse_response_text(&retry_text, retry_status, &endpoint.url, &req.path);
 
                     attempts.push(endpoint_attempt(&endpoint.url, retry_status, &retry_data));
-                    if should_try_next_endpoint(retry_status, &retry_data) {
+                    if should_try_next_endpoint(&req.path, retry_status, &retry_data) {
                         last_error = Some(message_from_value(&retry_data));
                         continue;
                     }
@@ -158,10 +187,10 @@ async fn api_request(req: ApiRequest) -> Result<ApiResponse, String> {
             }
         }
 
-        let data = parse_response_text(&text, status, &endpoint.url);
+        let data = parse_response_text(&text, status, &endpoint.url, &req.path);
 
         attempts.push(endpoint_attempt(&endpoint.url, status, &data));
-        if should_try_next_endpoint(status, &data) {
+        if should_try_next_endpoint(&req.path, status, &data) {
             last_error = Some(message_from_value(&data));
             continue;
         }
@@ -252,10 +281,10 @@ async fn upload_avatar(req: AvatarUploadRequest) -> Result<ApiResponse, String> 
         remember_response_cookies(&endpoint.base, response.headers())?;
         let status = response.status().as_u16();
         let text = response.text().await.map_err(|err| err.to_string())?;
-        let data = parse_response_text(&text, status, &endpoint.url);
+        let data = parse_response_text(&text, status, &endpoint.url, "/user/update_profile.php");
         attempts.push(endpoint_attempt(&endpoint.url, status, &data));
 
-        if should_try_next_endpoint(status, &data) {
+        if should_try_next_endpoint("/user/update_profile.php", status, &data) {
             last_error = Some(message_from_value(&data));
             continue;
         }
@@ -302,8 +331,16 @@ fn candidate_endpoints(path: &str) -> Vec<ApiEndpoint> {
         push_endpoint(&mut endpoints, ApiEndpoint::from_base(base, path));
     }
     if let Some(paths) = legacy_paths(path) {
-        for path in paths {
-            push_endpoint(&mut endpoints, ApiEndpoint::legacy(path));
+        for legacy_path in paths {
+            push_endpoint(&mut endpoints, ApiEndpoint::legacy(legacy_path));
+        }
+    }
+    if let Some(pairs) = legacy_endpoint_bases(path) {
+        for (base, legacy_path) in pairs {
+            push_endpoint(
+                &mut endpoints,
+                ApiEndpoint::legacy_with_base(base, legacy_path),
+            );
         }
     }
     endpoints
@@ -326,9 +363,16 @@ fn remember_active_base(base: &str) -> Result<(), String> {
 }
 
 fn is_success_response(data: &Value) -> bool {
-    data.get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    if let Some(value) = data.get("success").and_then(value_to_bool) {
+        return value;
+    }
+    if let Some(value) = data.get("ok").and_then(value_to_bool) {
+        return value;
+    }
+    if let Some(code) = data.get("code").and_then(value_to_i64) {
+        return code == 0 || code == 200;
+    }
+    false
 }
 
 struct ApiEndpoint {
@@ -343,6 +387,15 @@ impl ApiEndpoint {
         Self {
             url: format!("{LEGACY_API_BASE}{path}"),
             base: LEGACY_API_BASE.to_string(),
+            act: None,
+            body_format: BodyFormat::Form,
+        }
+    }
+
+    fn legacy_with_base(base: &'static str, path: &'static str) -> Self {
+        Self {
+            url: format!("{base}{path}"),
+            base: base.to_string(),
             act: None,
             body_format: BodyFormat::Form,
         }
@@ -375,8 +428,19 @@ enum BodyFormat {
 fn legacy_paths(path: &str) -> Option<&'static [&'static str]> {
     match path {
         "/friend/send_request.php" => Some(&["/send_friend_request.php", "/add_friend.php"]),
+        "/group/get_public_list.php" => Some(&["/group_list.php"]),
         "/message/get_private_msg.php" => Some(&["/get_friend_msg.php"]),
         "/message/send_private_msg.php" => Some(&["/send_friend_msg.php"]),
+        _ => None,
+    }
+}
+
+fn legacy_endpoint_bases(path: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match path {
+        "/group/get_public_list.php" => Some(&[
+            (LEGACY_API_BASE, "/group_list.php"),
+            (CSAC_LEGACY_BASE, "/group_list.php"),
+        ]),
         _ => None,
     }
 }
@@ -399,8 +463,20 @@ fn has_unauthorized_attempt(attempts: &[Value]) -> bool {
         .any(|attempt| attempt.get("status").and_then(Value::as_u64) == Some(401))
 }
 
-fn should_try_next_endpoint(status: u16, data: &Value) -> bool {
+fn should_try_next_endpoint(path: &str, status: u16, data: &Value) -> bool {
     if status == 401 {
+        return true;
+    }
+
+    if path == "/group/get_public_list.php"
+        && !data
+            .get("endpoint")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .ends_with("/group_list.php")
+        && is_success_response(data)
+        && public_group_count(data).unwrap_or(0) == 0
+    {
         return true;
     }
 
@@ -479,6 +555,60 @@ fn value_to_param(value: &Value) -> Option<String> {
         Value::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
         other => Some(other.to_string()),
     }
+}
+
+fn value_to_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(value) => value.as_i64(),
+        Value::String(value) => value.trim().parse().ok(),
+        Value::Bool(value) => Some(if *value { 1 } else { 0 }),
+        _ => None,
+    }
+}
+
+fn value_to_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => Some(value.as_i64().unwrap_or_default() != 0),
+        Value::String(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" | "success" | "ok" => Some(true),
+            "0" | "false" | "no" | "off" | "fail" | "failed" | "error" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn public_group_count(data: &Value) -> Option<usize> {
+    for path in [
+        &["groups"][..],
+        &["rooms"][..],
+        &["list"][..],
+        &["items"][..],
+        &["data"][..],
+        &["data", "groups"][..],
+        &["data", "rooms"][..],
+        &["data", "list"][..],
+        &["data", "items"][..],
+        &["result", "groups"][..],
+        &["result", "rooms"][..],
+        &["result", "items"][..],
+    ] {
+        if let Some(count) =
+            value_at_path(data, path).and_then(|value| value.as_array().map(Vec::len))
+        {
+            return Some(count);
+        }
+    }
+    None
+}
+
+fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
 }
 
 fn remember_response_cookies(base: &str, headers: &HeaderMap) -> Result<(), String> {
@@ -561,7 +691,7 @@ fn endpoint_referer(url: &str, params: &Value) -> Option<String> {
     None
 }
 
-fn parse_response_text(text: &str, status: u16, url: &str) -> Value {
+fn parse_response_text(text: &str, status: u16, url: &str, request_path: &str) -> Value {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return json!({
@@ -582,6 +712,17 @@ fn parse_response_text(text: &str, status: u16, url: &str) -> Value {
             "parse_error": true,
             "challenge": true
         });
+    }
+
+    if request_path == "/group/get_public_list.php" && url.ends_with("/group_list.php") {
+        if let Some(groups) = parse_group_list_page(trimmed) {
+            return json!({
+                "success": true,
+                "message": "公开群组加载成功",
+                "groups": groups,
+                "endpoint": url
+            });
+        }
     }
 
     if looks_like_site_script(trimmed) {
@@ -649,6 +790,131 @@ fn extract_json(text: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+fn parse_group_list_page(html: &str) -> Option<Vec<Value>> {
+    if looks_like_login_page(html) {
+        return None;
+    }
+    if !html.contains("group-list")
+        && !html.contains("group-item")
+        && !html.contains("group_view.php?rid=")
+    {
+        return None;
+    }
+
+    let starts: Vec<usize> = GROUP_ITEM_START_RE
+        .find_iter(html)
+        .map(|matched| matched.start())
+        .collect();
+    if starts.is_empty() {
+        let groups = parse_group_links(html);
+        if !groups.is_empty() {
+            return Some(groups);
+        }
+        return if html.contains("暂无公开群组") {
+            Some(Vec::new())
+        } else {
+            None
+        };
+    }
+
+    let mut groups = Vec::new();
+    for (index, start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).copied().unwrap_or(html.len());
+        let block = &html[*start..end];
+        let Some(room_id) = GROUP_ID_RE
+            .captures(block)
+            .and_then(|caps| caps.get(1))
+            .and_then(|value| value.as_str().parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let room_name = GROUP_NAME_RE
+            .captures(block)
+            .and_then(|caps| caps.get(1))
+            .map(|value| clean_html_text(value.as_str()))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("群组 {room_id}"));
+        let intro = GROUP_INTRO_RE
+            .captures(block)
+            .and_then(|caps| caps.get(1))
+            .map(|value| clean_html_text(value.as_str()))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "暂无简介".to_string());
+        groups.push(json!({
+            "id": room_id,
+            "room_id": room_id,
+            "room_name": room_name,
+            "intro": intro,
+            "join_type": 1
+        }));
+    }
+
+    if groups.is_empty() {
+        let linked = parse_group_links(html);
+        if linked.is_empty() {
+            None
+        } else {
+            Some(linked)
+        }
+    } else {
+        Some(groups)
+    }
+}
+
+fn parse_group_links(html: &str) -> Vec<Value> {
+    let mut groups: Vec<Value> = Vec::new();
+    for caps in GROUP_VIEW_LINK_RE.captures_iter(html) {
+        let Some(room_id) = caps
+            .get(1)
+            .and_then(|value| value.as_str().parse::<i64>().ok())
+        else {
+            continue;
+        };
+        if groups
+            .iter()
+            .any(|group| group.get("room_id").and_then(Value::as_i64) == Some(room_id))
+        {
+            continue;
+        }
+        let link_text = caps
+            .get(2)
+            .map(|value| clean_html_text(value.as_str()))
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("群组 {room_id}"));
+        groups.push(json!({
+            "id": room_id,
+            "room_id": room_id,
+            "room_name": link_text,
+            "intro": "暂无简介",
+            "join_type": 1
+        }));
+    }
+    groups
+}
+
+fn looks_like_login_page(html: &str) -> bool {
+    html.contains("name=\"username\"")
+        && html.contains("name=\"pwd\"")
+        && (html.contains("立即登录") || html.contains("<title>登录</title>"))
+}
+
+fn clean_html_text(text: &str) -> String {
+    decode_html_entities(&html_to_text(text))
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn decode_html_entities(text: &str) -> String {
+    text.replace("&nbsp;", " ")
+        .replace("&#160;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
 }
 
 fn html_to_text(text: &str) -> String {

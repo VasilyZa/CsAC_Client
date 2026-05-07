@@ -1,6 +1,6 @@
 use futures::join;
 use leptos::ev::{Event, SubmitEvent};
-use leptos::html::{Input, Textarea};
+use leptos::html::{Div, Input, Select, Textarea};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -23,7 +23,9 @@ enum Page {
     PublicGroups,
     Notices,
     Account,
+    About,
     GroupChat(i64, String),
+    GroupManage(i64, String),
     PrivateChat(i64, String),
 }
 
@@ -53,11 +55,41 @@ struct Friend {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 struct Group {
-    #[serde(alias = "id")]
+    #[serde(
+        default,
+        alias = "id",
+        alias = "rid",
+        alias = "group_id",
+        alias = "roomId",
+        deserialize_with = "de_i64"
+    )]
     room_id: i64,
+    #[serde(
+        default,
+        alias = "name",
+        alias = "title",
+        deserialize_with = "de_opt_string"
+    )]
     room_name: Option<String>,
+    #[serde(
+        default,
+        alias = "description",
+        alias = "desc",
+        deserialize_with = "de_opt_string"
+    )]
     intro: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_i64")]
     unread_count: Option<i64>,
+    #[serde(default, deserialize_with = "de_i64")]
+    join_type: i64,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    owner_name: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_i64")]
+    member_count: Option<i64>,
+    #[serde(default, deserialize_with = "de_bool")]
+    is_in_group: bool,
+    #[serde(default, deserialize_with = "de_bool")]
+    has_apply: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -167,6 +199,81 @@ struct GroupSearchResult {
     has_apply: bool,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct GroupManageRoom {
+    #[allow(dead_code)]
+    #[serde(default, alias = "id", alias = "room_id", deserialize_with = "de_i64")]
+    room_id: i64,
+    #[serde(default)]
+    room_name: String,
+    #[serde(default)]
+    intro: String,
+    #[serde(default)]
+    notice: String,
+    #[serde(default)]
+    invite_code: String,
+    #[serde(default, deserialize_with = "de_i64")]
+    join_type: i64,
+    #[allow(dead_code)]
+    #[serde(default, deserialize_with = "de_i64")]
+    owner_uid: i64,
+    #[serde(default)]
+    owner_name: String,
+    #[serde(default)]
+    ask_question: String,
+    #[serde(default)]
+    fixed_code: String,
+    #[serde(default, deserialize_with = "de_i64")]
+    show_in_list: i64,
+    #[serde(default, deserialize_with = "de_i64")]
+    allow_invite: i64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct GroupMember {
+    #[serde(default, deserialize_with = "de_i64")]
+    uid: i64,
+    #[serde(default)]
+    nickname: String,
+    #[serde(default)]
+    is_owner: bool,
+    #[serde(default)]
+    is_admin: bool,
+    #[serde(default)]
+    is_muted: bool,
+    #[serde(default, deserialize_with = "de_i64")]
+    mute_until: i64,
+    #[serde(default)]
+    online_status: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+struct GroupApplication {
+    #[serde(default, deserialize_with = "de_i64")]
+    id: i64,
+    #[serde(default, deserialize_with = "de_opt_i64")]
+    uid: Option<i64>,
+    #[serde(default)]
+    nickname: String,
+    #[serde(default)]
+    answer_content: String,
+    #[serde(default)]
+    apply_time: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct GroupManageData {
+    room: GroupManageRoom,
+    members: Vec<GroupMember>,
+    applications: Vec<GroupApplication>,
+    application_error: Option<String>,
+    #[allow(dead_code)]
+    is_in_group: bool,
+    is_owner: bool,
+    is_admin: bool,
+    can_view_invite: bool,
+}
+
 fn de_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
@@ -183,11 +290,53 @@ where
     Ok(value_to_i64(&value))
 }
 
+fn de_bool<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value_to_bool(&value).unwrap_or(false))
+}
+
+fn de_opt_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(value_to_string(&value))
+}
+
 fn value_to_i64(value: &Value) -> Option<i64> {
     match value {
         Value::Number(value) => value.as_i64(),
         Value::String(value) => value.parse().ok(),
         Value::Bool(value) => Some(if *value { 1 } else { 0 }),
+        _ => None,
+    }
+}
+
+fn value_to_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => Some(value.as_i64().unwrap_or_default() != 0),
+        Value::String(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            match value.as_str() {
+                "1" | "true" | "yes" | "on" | "success" | "ok" => Some(true),
+                "0" | "false" | "no" | "off" | "fail" | "failed" | "error" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(if *value { "1" } else { "0" }.to_string()),
         _ => None,
     }
 }
@@ -232,6 +381,7 @@ pub fn App() -> impl IntoView {
     let public_groups = RwSignal::new(Vec::<Group>::new());
     let notices = RwSignal::new(Vec::<Notice>::new());
     let messages = RwSignal::new(Vec::<Message>::new());
+    let group_manage = RwSignal::new(None::<GroupManageData>);
     let found_user = RwSignal::new(None::<UserSearchResult>);
     let found_group = RwSignal::new(None::<GroupSearchResult>);
     let status = RwSignal::new("正在连接 CsAC...".to_string());
@@ -283,8 +433,13 @@ pub fn App() -> impl IntoView {
         spawn_local(async move {
             match api_get("/group/get_public_list.php", json!({})).await {
                 Ok(data) => {
-                    public_groups.set(list_from_field(&data, "groups"));
-                    status.set(String::new());
+                    let groups = public_group_list(&data);
+                    public_groups.set(groups);
+                    if public_groups.get_untracked().is_empty() {
+                        status.set(public_group_empty_message(&data));
+                    } else {
+                        status.set(String::new());
+                    }
                 }
                 Err(err) => status.set(err),
             }
@@ -346,6 +501,10 @@ pub fn App() -> impl IntoView {
                         page.set(Page::Account);
                         status.set(String::new());
                     }>"账户"</button>
+                    <button class:active=move || matches!(page.get(), Page::About) on:click=move |_| {
+                        page.set(Page::About);
+                        status.set(String::new());
+                    }>"关于"</button>
                 </nav>
 
                 <div class="sidebar-user">
@@ -436,6 +595,9 @@ pub fn App() -> impl IntoView {
                             status=status
                         />
                     }.into_any(),
+                    Page::About => view! {
+                        <AboutView/>
+                    }.into_any(),
                     Page::GroupChat(room_id, room_name) => view! {
                         <ChatView
                             kind="group"
@@ -444,6 +606,25 @@ pub fn App() -> impl IntoView {
                             messages=messages
                             my_uid=me.get().map(|u| u.uid).unwrap_or_default()
                             back=Callback::new(move |_| refresh_home(true))
+                            manage=Some(Callback::new(move |(room_id, room_name): (i64, String)| {
+                                open_group_manage(room_id, room_name, group_manage, page, status);
+                            }))
+                            status=status
+                        />
+                    }.into_any(),
+                    Page::GroupManage(room_id, room_name) => view! {
+                        <GroupManageView
+                            room_id=room_id
+                            room_name=room_name
+                            data=group_manage
+                            my_uid=me.get().map(|u| u.uid).unwrap_or_default()
+                            back=Callback::new(move |(room_id, room_name): (i64, String)| {
+                                open_group_chat(room_id, room_name, messages, page, status);
+                            })
+                            refresh=Callback::new(move |(room_id, room_name): (i64, String)| {
+                                load_group_manage(room_id, room_name, group_manage, status);
+                            })
+                            home=Callback::new(move |_| refresh_home(true))
                             status=status
                         />
                     }.into_any(),
@@ -455,6 +636,7 @@ pub fn App() -> impl IntoView {
                             messages=messages
                             my_uid=me.get().map(|u| u.uid).unwrap_or_default()
                             back=Callback::new(move |_| refresh_home(true))
+                            manage=None
                             status=status
                         />
                     }.into_any(),
@@ -639,12 +821,12 @@ fn HomeView(
     };
 
     view! {
-        <div class="dashboard-grid">
+        <div class="home-workbench">
             <section class="workspace dashboard-hero">
-                <div>
+                <div class="hero-copy">
                     <span class="eyebrow">"CsAC Desktop"</span>
-                    <h2>"消息工作台"</h2>
-                    <p>"集中查看好友、群组、通知和待处理请求。"</p>
+                    <h2>"消息中枢"</h2>
+                    <p>"好友、群组和请求集中在一个工作台里。"</p>
                 </div>
                 <div class="stat-strip">
                     <div class="stat-card">
@@ -662,203 +844,233 @@ fn HomeView(
                 </div>
             </section>
 
-            <section class="workspace">
-                <div class="section-head">
-                    <h2>"我的好友"</h2>
-                    <span>{move || format!("{} 位", home.get().friends.len())}</span>
-                </div>
-                <div class="list">
-                    <Show when=move || !home.get().friends.is_empty() fallback=move || view!{ <Empty text="还没有好友"/> }>
-                        <For
-                            each=move || home.get().friends
-                            key=|friend| friend.friend_id
-                            children=move |friend| {
-                                let item = friend.clone();
-                                view! {
-                                    <button class="row-item" on:click=move |_| open_friend.run(item.clone())>
-                                        <Avatar src=friend.avatar.clone() label=friend.display_name.clone().unwrap_or_default()/>
-                                        <span class="row-main">
-                                            <strong>{friend.display_name.unwrap_or_else(|| "未命名好友".into())}</strong>
-                                            <small>{format!("@{} {}", friend.username.unwrap_or_default(), strip_html(friend.online_status.as_deref().unwrap_or("")))}</small>
-                                        </span>
-                                        <Unread count=friend.unread_count.unwrap_or_default()/>
-                                    </button>
-                                }
-                            }
-                        />
-                    </Show>
-                </div>
-            </section>
-
-            <section class="workspace">
-                <div class="section-head">
-                    <h2>"我的群组"</h2>
-                    <span>{move || format!("{} 个", home.get().groups.len())}</span>
-                </div>
-                <div class="list">
-                    <Show when=move || !home.get().groups.is_empty() fallback=move || view!{ <Empty text="还没有加入群组"/> }>
-                        <For
-                            each=move || home.get().groups
-                            key=|group| group.room_id
-                            children=move |group| {
-                                let item = group.clone();
-                                view! {
-                                    <button class="row-item" on:click=move |_| open_group.run(item.clone())>
-                                        <div class="room-icon">"#"</div>
-                                        <span class="row-main">
-                                            <strong>{group.room_name.unwrap_or_else(|| "未命名群组".into())}</strong>
-                                            <small>{format!("群组 ID {}", group.room_id)}</small>
-                                        </span>
-                                        <Unread count=group.unread_count.unwrap_or_default()/>
-                                    </button>
-                                }
-                            }
-                        />
-                    </Show>
-                </div>
-            </section>
-
-            <section class="workspace tools">
-                <div class="section-head">
-                    <h2>"快速操作"</h2>
-                    <span>"群组与好友"</span>
-                </div>
-                <div class="action-stack">
-                    <form class="inline-form action-form" on:submit=create_group>
+            <div class="home-main">
+                <section class="workspace conversations-panel">
+                    <div class="section-head">
                         <div>
-                            <strong>"创建群组"</strong>
-                            <small>"输入名称后立即创建并加入"</small>
+                            <h2>"会话"</h2>
+                            <span>"好友和群组"</span>
                         </div>
-                        <input node_ref=room_name placeholder="新群组名称"/>
-                        <button type="submit">"创建"</button>
-                    </form>
-                    <form class="inline-form action-form" on:submit=search_group>
-                        <div>
-                            <strong>"查找群组"</strong>
-                            <small>"按群组编号搜索并申请加入"</small>
-                        </div>
-                        <input node_ref=group_id placeholder="群组编号"/>
-                        <button type="submit">"查找"</button>
-                    </form>
-                    <form class="inline-form action-form" on:submit=search_user>
-                        <div>
-                            <strong>"查找用户"</strong>
-                            <small>"按用户 ID 添加好友"</small>
-                        </div>
-                        <input node_ref=user_id placeholder="用户 ID"/>
-                        <button type="submit">"查找"</button>
-                    </form>
-                </div>
-                <Show when=move || found_group.get().is_some()>
-                    {move || found_group.get().map(|group| {
-                        let room_id = group.room_id;
-                        let room_name_value = group.room_name.clone();
-                        let intro = if group.intro.trim().is_empty() { "这个群组还没有简介。".to_string() } else { group.intro.clone() };
-                        let notice = group.notice.clone();
-                        let has_notice = !notice.trim().is_empty();
-                        let notice_text = format!("公告：{}", notice);
-                        let owner = group.owner_name.clone();
-                        let join_type = group.join_type;
-                        let is_in_group = group.is_in_group;
-                        let has_apply = group.has_apply;
-                        let question = group.ask_question.clone();
-                        let clear_result = found_group;
-                        let open_group_result = open_group;
-                        let refresh_home = refresh;
-                        let after_join = Callback::new(move |_| {
-                            clear_result.set(None);
-                            refresh_home.run(());
-                        });
-                        let open_room_name = StoredValue::new(room_name_value.clone());
-                        view! {
-                            <div class="search-result group-result">
-                                <div class="room-icon">"#"</div>
-                                <div class="row-main">
-                                    <div class="result-title">
-                                        <strong>{room_name_value.clone()}</strong>
-                                        <span>{group_join_state_text(is_in_group, has_apply, join_type)}</span>
-                                    </div>
-                                    <small>{format!("群组 ID {} · 创建者 {}", room_id, owner)}</small>
-                                    <p>{intro}</p>
-                                    <Show when=move || has_notice>
-                                        <small>{notice_text.clone()}</small>
-                                    </Show>
-                                    <Show when=move || !is_in_group && !has_apply && (join_type == 2 || join_type == 3)>
-                                        <input node_ref=join_code placeholder="输入邀请码"/>
-                                    </Show>
-                                    <Show when=move || !is_in_group && !has_apply && join_type == 4>
-                                        <div class="question-box">
-                                            <small>{if question.trim().is_empty() { "该群组需要回答入群问题。".to_string() } else { format!("问题：{}", question) }}</small>
-                                            <input node_ref=join_answer placeholder="输入答案"/>
-                                        </div>
-                                    </Show>
-                                </div>
-                                <div class="result-actions">
-                                    <Show
-                                        when=move || is_in_group
-                                        fallback=move || view! {
-                                            <Show
-                                                when=move || !has_apply
-                                            >
-                                                    <button type="button" on:click=move |_| {
-                                                        let code = join_code.get().map(|el| el.value()).unwrap_or_default();
-                                                        let answer = join_answer.get().map(|el| el.value()).unwrap_or_default();
-                                                        apply_join_with_payload(room_id, join_type, code, answer, Some(after_join), status);
-                                                    }>{group_join_button_text(join_type)}</button>
-                                            </Show>
-                                        }
-                                    >
-                                        <button type="button" on:click=move |_| {
-                                            open_group_result.run(Group {
-                                                room_id,
-                                                room_name: Some(open_room_name.get_value()),
-                                                intro: None,
-                                                unread_count: None,
-                                            });
-                                        }>"进入群组"</button>
-                                    </Show>
-                                    <button class="ghost" type="button" on:click=move |_| clear_result.set(None)>"关闭"</button>
-                                </div>
+                        <button class="ghost" on:click=move |_| refresh.run(())>"同步"</button>
+                    </div>
+                    <div class="conversation-columns">
+                        <div class="conversation-section">
+                            <div class="subsection-head">
+                                <h3>"好友"</h3>
+                                <span>{move || format!("{} 位", home.get().friends.len())}</span>
                             </div>
-                        }
-                    })}
-                </Show>
-                <Show when=move || found_user.get().is_some()>
-                    {move || found_user.get().map(|user| {
-                        let add_uid = user.uid;
-                        let nickname = user.nickname.clone();
-                        let username = user.username.clone();
-                        let avatar = user.avatar.clone();
-                        let state_text = friend_state_text(&user);
-                        let can_add = user.can_add_friend;
-                        let clear_result = found_user;
-                        let refresh_home = refresh;
-                        view! {
-                            <div class="search-result">
-                                <Avatar src=avatar label=nickname.clone()/>
-                                <div class="row-main">
-                                    <strong>{nickname}</strong>
-                                    <small>{format!("@{}  ID {}", username, add_uid)}</small>
-                                    <small>{state_text}</small>
-                                </div>
-                                <Show
-                                    when=move || can_add
-                                    fallback=move || view! {
-                                        <button class="ghost" type="button" on:click=move |_| clear_result.set(None)>"关闭"</button>
-                                    }
-                                >
-                                    <button type="button" on:click=move |_| send_friend_request(add_uid, refresh_home, status)>"添加好友"</button>
+                            <div class="list dense-list">
+                                <Show when=move || !home.get().friends.is_empty() fallback=move || view!{ <Empty text="还没有好友"/> }>
+                                    <For
+                                        each=move || home.get().friends
+                                        key=|friend| friend.friend_id
+                                        children=move |friend| {
+                                            let item = friend.clone();
+                                            view! {
+                                                <button class="row-item conversation-item" on:click=move |_| open_friend.run(item.clone())>
+                                                    <Avatar src=friend.avatar.clone() label=friend.display_name.clone().unwrap_or_default()/>
+                                                    <span class="row-main">
+                                                        <strong>{friend.display_name.unwrap_or_else(|| "未命名好友".into())}</strong>
+                                                        <small>{format!("@{} {}", friend.username.unwrap_or_default(), strip_html(friend.online_status.as_deref().unwrap_or("")))}</small>
+                                                    </span>
+                                                    <Unread count=friend.unread_count.unwrap_or_default()/>
+                                                </button>
+                                            }
+                                        }
+                                    />
                                 </Show>
                             </div>
-                        }
-                    })}
-                </Show>
-            </section>
+                        </div>
 
-            <section class="workspace alerts">
-                <div class="section-head"><h2>"好友通知"</h2></div>
-                <FriendAlerts home=home my_uid=my_uid refresh=refresh status=status/>
-            </section>
+                        <div class="conversation-section">
+                            <div class="subsection-head">
+                                <h3>"群组"</h3>
+                                <span>{move || format!("{} 个", home.get().groups.len())}</span>
+                            </div>
+                            <div class="list dense-list">
+                                <Show when=move || !home.get().groups.is_empty() fallback=move || view!{ <Empty text="还没有加入群组"/> }>
+                                    <For
+                                        each=move || home.get().groups
+                                        key=|group| group.room_id
+                                        children=move |group| {
+                                            let item = group.clone();
+                                            view! {
+                                                <button class="row-item conversation-item" on:click=move |_| open_group.run(item.clone())>
+                                                    <div class="room-icon">"#"</div>
+                                                    <span class="row-main">
+                                                        <strong>{group.room_name.unwrap_or_else(|| "未命名群组".into())}</strong>
+                                                        <small>{format!("群组 ID {}", group.room_id)}</small>
+                                                    </span>
+                                                    <Unread count=group.unread_count.unwrap_or_default()/>
+                                                </button>
+                                            }
+                                        }
+                                    />
+                                </Show>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="workspace alerts requests-panel">
+                    <div class="section-head"><h2>"好友通知"</h2></div>
+                    <FriendAlerts home=home my_uid=my_uid refresh=refresh status=status/>
+                </section>
+            </div>
+
+            <aside class="home-side">
+                <section class="workspace tools action-panel">
+                    <div class="section-head">
+                        <div>
+                            <h2>"快速操作"</h2>
+                            <span>"创建、查找、加入"</span>
+                        </div>
+                    </div>
+                    <div class="action-stack">
+                        <form class="inline-form action-form" on:submit=create_group>
+                            <div>
+                                <strong>"创建群组"</strong>
+                                <small>"输入名称后立即创建并加入"</small>
+                            </div>
+                            <div class="action-control">
+                                <input node_ref=room_name placeholder="新群组名称"/>
+                                <button type="submit">"创建"</button>
+                            </div>
+                        </form>
+                        <form class="inline-form action-form" on:submit=search_group>
+                            <div>
+                                <strong>"查找群组"</strong>
+                                <small>"按群组编号搜索并申请加入"</small>
+                            </div>
+                            <div class="action-control">
+                                <input node_ref=group_id placeholder="群组编号"/>
+                                <button type="submit">"查找"</button>
+                            </div>
+                        </form>
+                        <form class="inline-form action-form" on:submit=search_user>
+                            <div>
+                                <strong>"查找用户"</strong>
+                                <small>"按用户 ID 添加好友"</small>
+                            </div>
+                            <div class="action-control">
+                                <input node_ref=user_id placeholder="用户 ID"/>
+                                <button type="submit">"查找"</button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="result-stack">
+                        <Show when=move || found_group.get().is_some()>
+                            {move || found_group.get().map(|group| {
+                                let room_id = group.room_id;
+                                let room_name_value = group.room_name.clone();
+                                let intro = if group.intro.trim().is_empty() { "这个群组还没有简介。".to_string() } else { group.intro.clone() };
+                                let notice = group.notice.clone();
+                                let has_notice = !notice.trim().is_empty();
+                                let notice_text = format!("公告：{}", notice);
+                                let owner = group.owner_name.clone();
+                                let join_type = group.join_type;
+                                let is_in_group = group.is_in_group;
+                                let has_apply = group.has_apply;
+                                let question = group.ask_question.clone();
+                                let clear_result = found_group;
+                                let open_group_result = open_group;
+                                let refresh_home = refresh;
+                                let after_join = Callback::new(move |_| {
+                                    clear_result.set(None);
+                                    refresh_home.run(());
+                                });
+                                let open_room_name = StoredValue::new(room_name_value.clone());
+                                view! {
+                                    <div class="search-result group-result">
+                                        <div class="room-icon">"#"</div>
+                                        <div class="row-main">
+                                            <div class="result-title">
+                                                <strong>{room_name_value.clone()}</strong>
+                                                <span>{group_join_state_text(is_in_group, has_apply, join_type)}</span>
+                                            </div>
+                                            <small>{format!("群组 ID {} · 创建者 {}", room_id, owner)}</small>
+                                            <p>{intro}</p>
+                                            <Show when=move || has_notice>
+                                                <small>{notice_text.clone()}</small>
+                                            </Show>
+                                            <Show when=move || !is_in_group && !has_apply && (join_type == 2 || join_type == 3)>
+                                                <input node_ref=join_code placeholder="输入邀请码"/>
+                                            </Show>
+                                            <Show when=move || !is_in_group && !has_apply && join_type == 4>
+                                                <div class="question-box">
+                                                    <small>{if question.trim().is_empty() { "该群组需要回答入群问题。".to_string() } else { format!("问题：{}", question) }}</small>
+                                                    <input node_ref=join_answer placeholder="输入答案"/>
+                                                </div>
+                                            </Show>
+                                        </div>
+                                        <div class="result-actions">
+                                            <Show
+                                                when=move || is_in_group
+                                                fallback=move || view! {
+                                                    <Show
+                                                        when=move || !has_apply
+                                                    >
+                                                            <button type="button" on:click=move |_| {
+                                                                let code = join_code.get().map(|el| el.value()).unwrap_or_default();
+                                                                let answer = join_answer.get().map(|el| el.value()).unwrap_or_default();
+                                                                apply_join_with_payload(room_id, join_type, code, answer, Some(after_join), status);
+                                                            }>{group_join_button_text(join_type)}</button>
+                                                    </Show>
+                                                }
+                                            >
+                                                <button type="button" on:click=move |_| {
+                                                    open_group_result.run(Group {
+                                                        room_id,
+                                                        room_name: Some(open_room_name.get_value()),
+                                                        intro: None,
+                                                        unread_count: None,
+                                                        join_type: 1,
+                                                        owner_name: None,
+                                                        member_count: None,
+                                                        is_in_group: true,
+                                                        has_apply: false,
+                                                    });
+                                                }>"进入群组"</button>
+                                            </Show>
+                                            <button class="ghost" type="button" on:click=move |_| clear_result.set(None)>"关闭"</button>
+                                        </div>
+                                    </div>
+                                }
+                            })}
+                        </Show>
+                        <Show when=move || found_user.get().is_some()>
+                            {move || found_user.get().map(|user| {
+                                let add_uid = user.uid;
+                                let nickname = user.nickname.clone();
+                                let username = user.username.clone();
+                                let avatar = user.avatar.clone();
+                                let state_text = friend_state_text(&user);
+                                let can_add = user.can_add_friend;
+                                let clear_result = found_user;
+                                let refresh_home = refresh;
+                                view! {
+                                    <div class="search-result">
+                                        <Avatar src=avatar label=nickname.clone()/>
+                                        <div class="row-main">
+                                            <strong>{nickname}</strong>
+                                            <small>{format!("@{}  ID {}", username, add_uid)}</small>
+                                            <small>{state_text}</small>
+                                        </div>
+                                        <Show
+                                            when=move || can_add
+                                            fallback=move || view! {
+                                                <button class="ghost" type="button" on:click=move |_| clear_result.set(None)>"关闭"</button>
+                                            }
+                                        >
+                                            <button type="button" on:click=move |_| send_friend_request(add_uid, refresh_home, status)>"添加好友"</button>
+                                        </Show>
+                                    </div>
+                                }
+                            })}
+                        </Show>
+                    </div>
+                </section>
+            </aside>
         </div>
     }
 }
@@ -925,9 +1137,12 @@ fn PublicGroupsView(
     status: RwSignal<String>,
 ) -> impl IntoView {
     view! {
-        <section class="workspace full">
+        <section class="workspace full public-groups-page">
             <div class="section-head">
-                <h2>"公开群组"</h2>
+                <div>
+                    <h2>"公开群组"</h2>
+                    <span>{move || format!("{} 个可加入群组", groups.get().len())}</span>
+                </div>
                 <button class="ghost" on:click=move |_| refresh.run(())>"重新加载"</button>
             </div>
             <div class="card-grid">
@@ -937,14 +1152,38 @@ fn PublicGroupsView(
                         key=|group| group.room_id
                         children=move |group| {
                             let room_id = group.room_id;
+                            let room_name = group.room_name.clone().unwrap_or_else(|| "未命名群组".into());
+                            let intro = group
+                                .intro
+                                .clone()
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or_else(|| "这个群组还没有简介。".into());
+                            let owner_name = group.owner_name.clone().unwrap_or_default();
+                            let member_count = group.member_count;
+                            let join_type = group.join_type;
+                            let is_in_group = group.is_in_group;
+                            let has_apply = group.has_apply;
+                            let has_owner_name = !owner_name.trim().is_empty();
                             view! {
-                                <article class="group-card">
-                                    <div class="room-icon large">"#"</div>
-                                    <h3>{group.room_name.unwrap_or_else(|| "未命名群组".into())}</h3>
-                                    <p>{group.intro.unwrap_or_else(|| "这个群组还没有简介。".into())}</p>
+                                <article class="group-card public-group-card">
+                                    <div class="group-card-top">
+                                        <div class="room-icon large">"#"</div>
+                                        <span>{group_join_state_text(is_in_group, has_apply, join_type)}</span>
+                                    </div>
+                                    <h3>{room_name.clone()}</h3>
+                                    <p>{intro}</p>
+                                    <div class="group-meta-line">
+                                        <span>{join_type_text(join_type)}</span>
+                                        <Show when=move || member_count.is_some()>
+                                            <span>{move || format!("{} 人", member_count.unwrap_or_default())}</span>
+                                        </Show>
+                                        <Show when=move || has_owner_name>
+                                            <span>{format!("群主 {}", owner_name.clone())}</span>
+                                        </Show>
+                                    </div>
                                     <div class="card-foot">
                                         <span>{format!("ID {}", room_id)}</span>
-                                        <button on:click=move |_| apply_join(room_id, status)>"申请加入"</button>
+                                        <button on:click=move |_| open_public_group_detail(room_id, status)>"查看 / 加入"</button>
                                     </div>
                                 </article>
                             }
@@ -1185,6 +1424,534 @@ fn AccountView(
 }
 
 #[component]
+fn AboutView() -> impl IntoView {
+    view! {
+        <section class="workspace full about-page">
+            <div class="about-header">
+                <div class="about-logo">
+                    <img src="/icon/favicon.ico" alt="CsAC"/>
+                </div>
+                <div>
+                    <h2>"CsAC Client"</h2>
+                    <a href="https://github.com/VasilyZa/CsAC_Client" target="_blank" rel="noreferrer">
+                        "https://github.com/VasilyZa/CsAC_Client"
+                    </a>
+                </div>
+            </div>
+
+            <div class="about-section">
+                <h3>"软件"</h3>
+                <dl class="about-list">
+                    <div>
+                        <dt>"版本号："</dt>
+                        <dd>"v0.1.2 PreRelease"</dd>
+                    </div>
+                    <div>
+                        <dt>"构建框架："</dt>
+                        <dd>"Tauri + Leptos + Rust"</dd>
+                    </div>
+                    <div>
+                        <dt>"客户端类型："</dt>
+                        <dd>"CsAC 桌面聊天客户端"</dd>
+                    </div>
+                    <div>
+                        <dt>"运行模式："</dt>
+                        <dd>"兼容 CsAC / cschat 当前接口"</dd>
+                    </div>
+                </dl>
+            </div>
+
+            <div class="about-section">
+                <h3>"项目"</h3>
+                <dl class="about-list">
+                    <div>
+                        <dt>"许可证："</dt>
+                        <dd>"Apache License 2.0"</dd>
+                    </div>
+                    <div>
+                        <dt>"源码仓库："</dt>
+                        <dd>
+                            <a href="https://github.com/VasilyZa/CsAC_Client" target="_blank" rel="noreferrer">
+                                "GitHub / VasilyZa / CsAC_Client"
+                            </a>
+                        </dd>
+                    </div>
+                    <div>
+                        <dt>"项目定位："</dt>
+                        <dd>"为 CsAC 网站提供现代化桌面客户端体验"</dd>
+                    </div>
+                </dl>
+            </div>
+        </section>
+    }
+}
+
+#[component]
+fn GroupManageView(
+    room_id: i64,
+    room_name: String,
+    data: RwSignal<Option<GroupManageData>>,
+    my_uid: i64,
+    back: Callback<(i64, String)>,
+    refresh: Callback<(i64, String)>,
+    home: Callback<()>,
+    status: RwSignal<String>,
+) -> impl IntoView {
+    let name_input = NodeRef::<Input>::new();
+    let intro_input = NodeRef::<Textarea>::new();
+    let notice_input = NodeRef::<Textarea>::new();
+    let join_type_input = NodeRef::<Select>::new();
+    let fixed_code_input = NodeRef::<Input>::new();
+    let question_input = NodeRef::<Input>::new();
+    let answer_input = NodeRef::<Input>::new();
+    let show_in_list_input = NodeRef::<Select>::new();
+    let allow_invite_input = NodeRef::<Select>::new();
+    let transfer_uid_input = NodeRef::<Input>::new();
+    let room_name_store = StoredValue::new(room_name.clone());
+
+    let refresh_now = move || refresh.run((room_id, room_name_store.get_value()));
+
+    let save_name = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let value = name_input
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        edit_group_info(
+            room_id,
+            "name",
+            value,
+            refresh,
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    let save_intro = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let value = intro_input
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        edit_group_info(
+            room_id,
+            "intro",
+            value,
+            refresh,
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    let save_notice = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let value = notice_input
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        edit_group_info(
+            room_id,
+            "notice",
+            value,
+            refresh,
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    let save_join_settings = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let join_type = join_type_input
+            .get()
+            .and_then(|el| el.value().parse::<i64>().ok())
+            .unwrap_or(1);
+        let fixed_code = fixed_code_input
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        let question = question_input
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        let answer = answer_input
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        let show_in_list = show_in_list_input
+            .get()
+            .and_then(|el| el.value().parse::<i64>().ok())
+            .unwrap_or(1);
+        let allow_invite = allow_invite_input
+            .get()
+            .and_then(|el| el.value().parse::<i64>().ok())
+            .unwrap_or(1);
+        update_group_settings(
+            room_id,
+            join_type,
+            fixed_code,
+            question,
+            answer,
+            show_in_list,
+            allow_invite,
+            refresh,
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    let reset_invite = move |_| {
+        group_simple_action(
+            "/group/reset_invite_code.php",
+            json!({ "room_id": room_id }),
+            "邀请码已重置",
+            refresh,
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    let transfer_owner = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let target_uid = transfer_uid_input
+            .get()
+            .and_then(|el| el.value().trim().parse::<i64>().ok())
+            .unwrap_or_default();
+        if target_uid <= 0 || target_uid == my_uid {
+            status.set("请输入有效的接收人 UID".into());
+            return;
+        }
+        group_simple_action(
+            "/group/transfer.php",
+            json!({ "room_id": room_id, "target_uid": target_uid }),
+            "群组转让申请已发送",
+            refresh,
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    let disband = move |_| {
+        group_simple_action(
+            "/group/disband.php",
+            json!({ "room_id": room_id }),
+            "群组已提交解散",
+            Callback::new(move |_| home.run(())),
+            room_name_store.get_value(),
+            status,
+        );
+    };
+
+    view! {
+        <section class="workspace full manage-page">
+            <div class="manage-hero">
+                <div>
+                    <span class="eyebrow">"Group Control"</span>
+                    <h2>{move || data.get().map(|info| info.room.room_name).unwrap_or_else(|| room_name_store.get_value())}</h2>
+                    <p>{format!("群组 ID {room_id}")}</p>
+                </div>
+                <div class="manage-actions">
+                    <button class="ghost" on:click=move |_| back.run((room_id, room_name_store.get_value()))>"返回群聊"</button>
+                    <button class="ghost" on:click=move |_| refresh_now()>"刷新资料"</button>
+                </div>
+            </div>
+
+            <Show
+                when=move || data.get().is_some()
+                fallback=move || view! { <Empty text="正在加载群组管理数据"/> }
+            >
+                {move || data.get().map(|info| {
+                    let room = info.room.clone();
+                    let is_owner = info.is_owner;
+                    let is_admin = info.is_admin;
+                    let can_manage = is_owner || is_admin;
+                    let member_count = info.members.len();
+                    let admins = info.members.iter().filter(|member| member.is_admin).count();
+                    let muted = info.members.iter().filter(|member| member.is_muted).count();
+                    let intro = if room.intro.trim().is_empty() { "这个群组还没有简介。".to_string() } else { room.intro.clone() };
+                    let notice = if room.notice.trim().is_empty() { "暂无公告。".to_string() } else { room.notice.clone() };
+                    let current_join_type = room.join_type.to_string();
+                    let current_show = room.show_in_list.to_string();
+                    let current_allow = room.allow_invite.to_string();
+                    let invite_code = if info.can_view_invite && !room.invite_code.trim().is_empty() {
+                        room.invite_code.clone()
+                    } else if info.can_view_invite {
+                        "当前没有可显示的邀请码".into()
+                    } else {
+                        "当前身份不可查看邀请码".into()
+                    };
+                    let members_store = StoredValue::new(info.members.clone());
+                    let applications_store = StoredValue::new(info.applications.clone());
+                    let application_error_store = StoredValue::new(info.application_error.clone());
+                    let applications_count = applications_store.get_value().len();
+                    let has_application_error = application_error_store.get_value().is_some();
+                    let no_applications = applications_store.get_value().is_empty();
+                    let fixed_code_text = if room.fixed_code.trim().is_empty() {
+                        "未设置".to_string()
+                    } else {
+                        room.fixed_code.clone()
+                    };
+                    let ask_question_text = if room.ask_question.trim().is_empty() {
+                        "未设置".to_string()
+                    } else {
+                        room.ask_question.clone()
+                    };
+                    let room_name_value = room.room_name.clone();
+                    let intro_value = room.intro.clone();
+                    let notice_value = room.notice.clone();
+                    let fixed_code_value = room.fixed_code.clone();
+                    let question_value = room.ask_question.clone();
+                    view! {
+                        <div class="manage-grid">
+                            <aside class="manage-panel summary-panel">
+                                <div class="room-icon large">"#"</div>
+                                <h3>{room.room_name.clone()}</h3>
+                                <p>{intro}</p>
+                                <div class="summary-list">
+                                    <span><strong>{member_count}</strong>"成员"</span>
+                                    <span><strong>{admins}</strong>"管理"</span>
+                                    <span><strong>{muted}</strong>"禁言"</span>
+                                </div>
+                                <div class="meta-list">
+                                    <span>"群主："{room.owner_name.clone()}</span>
+                                    <span>"我的权限："{role_text(is_owner, is_admin)}</span>
+                                    <span>"加入方式："{join_type_text(room.join_type)}</span>
+                                    <span>"公开展示："{switch_text(room.show_in_list)}</span>
+                                    <span>"成员邀请："{switch_text(room.allow_invite)}</span>
+                                </div>
+                            </aside>
+
+                            <div class="manage-main">
+                                <section class="manage-panel">
+                                    <div class="section-head">
+                                        <h2>"群组资料"</h2>
+                                        <span>{if can_manage { "可编辑" } else { "只读" }}</span>
+                                    </div>
+                                    <div class="info-surface">
+                                        <div>
+                                            <strong>"群公告"</strong>
+                                            <p>{notice}</p>
+                                        </div>
+                                        <div>
+                                            <strong>"当前邀请码"</strong>
+                                            <p>{invite_code}</p>
+                                        </div>
+                                    </div>
+                                    <Show
+                                        when=move || can_manage
+                                        fallback=move || view! {
+                                            <p class="muted">"你当前不是群主或管理员，只能查看群组信息和成员列表。"</p>
+                                        }
+                                    >
+                                        <div class="settings-grid">
+                                            <form class="settings-card compact" on:submit=save_name>
+                                                <div>
+                                                    <h3>"群组名称"</h3>
+                                                    <p>"用于群组列表和聊天标题。"</p>
+                                                </div>
+                                                <input node_ref=name_input maxlength="40" prop:value=room_name_value.clone()/>
+                                                <button type="submit">"保存名称"</button>
+                                            </form>
+                                            <form class="settings-card compact" on:submit=save_intro>
+                                                <div>
+                                                    <h3>"群组简介"</h3>
+                                                    <p>"展示在公开群组和搜索结果中。"</p>
+                                                </div>
+                                                <textarea node_ref=intro_input rows="4" prop:value=intro_value.clone()></textarea>
+                                                <button type="submit">"保存简介"</button>
+                                            </form>
+                                            <form class="settings-card compact" on:submit=save_notice>
+                                                <div>
+                                                    <h3>"群公告"</h3>
+                                                    <p>"进入管理页和群组详情时可见。"</p>
+                                                </div>
+                                                <textarea node_ref=notice_input rows="4" prop:value=notice_value.clone()></textarea>
+                                                <button type="submit">"保存公告"</button>
+                                            </form>
+                                        </div>
+                                    </Show>
+                                </section>
+
+                                <section class="manage-panel">
+                                    <div class="section-head">
+                                        <h2>"加入与可见性"</h2>
+                                        <span>"兼容原站规则"</span>
+                                    </div>
+                                    <Show
+                                        when=move || can_manage
+                                        fallback=move || view! {
+                                            <div class="info-surface">
+                                                <div><strong>"加入方式"</strong><p>{join_type_text(room.join_type)}</p></div>
+                                                <div><strong>"固定邀请码"</strong><p>{fixed_code_text.clone()}</p></div>
+                                                <div><strong>"入群问题"</strong><p>{ask_question_text.clone()}</p></div>
+                                            </div>
+                                        }
+                                    >
+                                        <form class="settings-card settings-wide" on:submit=save_join_settings>
+                                            <div class="field-grid">
+                                                <label>"加入方式"
+                                                    <select node_ref=join_type_input prop:value=current_join_type.clone()>
+                                                        <option value="1">"直接加入"</option>
+                                                        <option value="2">"自动轮换邀请码"</option>
+                                                        <option value="3">"固定邀请码"</option>
+                                                        <option value="4">"问答审核"</option>
+                                                    </select>
+                                                </label>
+                                                <label>"公开群组"
+                                                    <select node_ref=show_in_list_input prop:value=current_show.clone()>
+                                                        <option value="1">"显示"</option>
+                                                        <option value="0">"隐藏"</option>
+                                                    </select>
+                                                </label>
+                                                <label>"成员邀请"
+                                                    <select node_ref=allow_invite_input prop:value=current_allow.clone()>
+                                                        <option value="1">"允许"</option>
+                                                        <option value="0">"禁止"</option>
+                                                    </select>
+                                                </label>
+                                                <label>"固定邀请码"
+                                                    <input node_ref=fixed_code_input prop:value=fixed_code_value.clone() placeholder="固定邀请码模式使用"/>
+                                                </label>
+                                                <label>"入群问题"
+                                                    <input node_ref=question_input prop:value=question_value.clone() placeholder="问答审核模式使用"/>
+                                                </label>
+                                                <label>"问题答案"
+                                                    <input node_ref=answer_input placeholder="留空则不更新答案"/>
+                                                </label>
+                                            </div>
+                                            <div class="button-row">
+                                                <button type="submit">"保存设置"</button>
+                                                <Show when=move || is_owner>
+                                                    <button class="ghost" type="button" on:click=reset_invite>"重置邀请码"</button>
+                                                </Show>
+                                            </div>
+                                        </form>
+                                    </Show>
+                                </section>
+
+                                <section class="manage-panel">
+                                    <div class="section-head">
+                                        <h2>"成员管理"</h2>
+                                        <span>{format!("{} 人", member_count)}</span>
+                                    </div>
+                                    <div class="member-list">
+                                        <For
+                                            each=move || members_store.get_value()
+                                            key=|member| member.uid
+                                            children=move |member| {
+                                                let uid = member.uid;
+                                                let can_operate_member = can_manage && uid != my_uid && !member.is_owner;
+                                                let can_admin_member = is_owner && uid != my_uid && !member.is_owner;
+                                                let is_muted = member.is_muted;
+                                                let is_member_admin = member.is_admin;
+                                                let member_name = if member.nickname.trim().is_empty() { format!("用户 {uid}") } else { member.nickname.clone() };
+                                                view! {
+                                                    <div class="member-row">
+                                                        <Avatar src=None label=member_name.clone()/>
+                                                        <div class="row-main">
+                                                            <div class="member-title">
+                                                                <strong>{member_name}</strong>
+                                                                <span>"#"{uid}</span>
+                                                                <Show when=move || member.is_owner>
+                                                                    <em class="role owner">"群主"</em>
+                                                                </Show>
+                                                                <Show when=move || member.is_admin && !member.is_owner>
+                                                                    <em class="role admin">"管理"</em>
+                                                                </Show>
+                                                                <Show when=move || is_muted>
+                                                                    <em class="role muted-role">"禁言"</em>
+                                                                </Show>
+                                                            </div>
+                                                            <small>{format!("{} · {}", strip_html(&member.online_status), mute_text(member.mute_until, member.is_muted))}</small>
+                                                        </div>
+                                                        <Show when=move || can_operate_member>
+                                                            <div class="member-actions">
+                                                                <button class="ghost" on:click=move |_| group_member_action(room_id, uid, if is_muted { "unmute" } else { "mute" }, refresh, room_name_store.get_value(), status)>
+                                                                    {if is_muted { "解禁" } else { "禁言" }}
+                                                                </button>
+                                                                <button class="danger" on:click=move |_| group_member_action(room_id, uid, "kick", refresh, room_name_store.get_value(), status)>"踢出"</button>
+                                                                <Show when=move || can_admin_member>
+                                                                    <button class="ghost" on:click=move |_| group_admin_action(room_id, uid, if is_member_admin { "remove" } else { "set" }, refresh, room_name_store.get_value(), status)>
+                                                                        {if is_member_admin { "撤销管理" } else { "设为管理" }}
+                                                                    </button>
+                                                                </Show>
+                                                            </div>
+                                                        </Show>
+                                                    </div>
+                                                }
+                                            }
+                                        />
+                                    </div>
+                                </section>
+
+                                <Show when=move || is_admin>
+                                    <section class="manage-panel">
+                                        <div class="section-head">
+                                            <h2>"入群申请"</h2>
+                                            <span>{format!("{} 条", applications_count)}</span>
+                                        </div>
+                                        <Show
+                                            when=move || !has_application_error
+                                            fallback=move || view! {
+                                                <div class="empty subtle">
+                                                    {application_error_store.get_value().unwrap_or_else(|| "当前后端未提供申请列表接口。".into())}
+                                                </div>
+                                            }
+                                        >
+                                            <Show
+                                                when=move || !no_applications
+                                                fallback=move || view! { <Empty text="暂无待处理申请"/> }
+                                            >
+                                                <div class="list compact">
+                                                    <For
+                                                        each=move || applications_store.get_value()
+                                                        key=|apply| apply.id
+                                                        children=move |apply| {
+                                                            let apply_id = apply.id;
+                                                            view! {
+                                                                <div class="notice-row">
+                                                                    <Avatar src=None label=apply.nickname.clone()/>
+                                                                    <div class="row-main">
+                                                                        <strong>{if apply.nickname.trim().is_empty() { format!("用户 {}", apply.uid.unwrap_or_default()) } else { apply.nickname.clone() }}</strong>
+                                                                        <small>{apply.apply_time.clone()}</small>
+                                                                        <p class="inline-note">{if apply.answer_content.trim().is_empty() { "未填写申请内容".to_string() } else { apply.answer_content.clone() }}</p>
+                                                                    </div>
+                                                                    <button on:click=move |_| handle_group_apply(room_id, apply_id, "pass", refresh, room_name_store.get_value(), status)>"通过"</button>
+                                                                    <button class="danger" on:click=move |_| handle_group_apply(room_id, apply_id, "refuse", refresh, room_name_store.get_value(), status)>"拒绝"</button>
+                                                                </div>
+                                                            }
+                                                        }
+                                                    />
+                                                </div>
+                                            </Show>
+                                        </Show>
+                                    </section>
+                                </Show>
+
+                                <Show when=move || is_owner>
+                                    <section class="manage-panel danger-zone">
+                                        <div class="section-head">
+                                            <h2>"群主操作"</h2>
+                                            <span>"谨慎处理"</span>
+                                        </div>
+                                        <div class="owner-actions">
+                                            <form class="inline-form transfer-form" on:submit=transfer_owner>
+                                                <input node_ref=transfer_uid_input placeholder="接收人 UID"/>
+                                                <button class="ghost" type="submit">"发起转让"</button>
+                                            </form>
+                                            <button class="danger" on:click=disband>"解散群组"</button>
+                                        </div>
+                                    </section>
+                                </Show>
+                            </div>
+                        </div>
+                    }
+                })}
+            </Show>
+        </section>
+    }
+}
+
+#[component]
 fn ChatView(
     kind: &'static str,
     target_id: i64,
@@ -1192,13 +1959,27 @@ fn ChatView(
     messages: RwSignal<Vec<Message>>,
     my_uid: i64,
     back: Callback<()>,
+    manage: Option<Callback<(i64, String)>>,
     status: RwSignal<String>,
 ) -> impl IntoView {
     let input = NodeRef::<Textarea>::new();
+    let messages_el = NodeRef::<Div>::new();
+    let chat_title = title.clone();
+    let manage_button = manage.map(|manage| {
+        let room_name = chat_title.clone();
+        view! {
+            <button class="ghost" on:click=move |_| manage.run((target_id, room_name.clone()))>"群管理"</button>
+        }
+    });
 
     let refresh = move |_| {
         load_chat(kind, target_id, messages, status);
     };
+
+    Effect::new(move |_| {
+        let _ = messages.get().len();
+        scroll_messages_to_bottom(messages_el);
+    });
 
     let send = move |ev: SubmitEvent| {
         ev.prevent_default();
@@ -1238,9 +2019,12 @@ fn ChatView(
                     <h2>{title}</h2>
                     <span>{if kind == "group" { format!("群组 ID {target_id}") } else { format!("用户 ID {target_id}") }}</span>
                 </div>
-                <button on:click=refresh>"刷新消息"</button>
+                <div class="chat-actions">
+                    {manage_button}
+                    <button on:click=refresh>"刷新消息"</button>
+                </div>
             </div>
-            <div class="messages">
+            <div class="messages" node_ref=messages_el>
                 <Show when=move || !messages.get().is_empty() fallback=move || view!{ <Empty text="暂无消息"/> }>
                     <For
                         each=move || messages.get()
@@ -1268,7 +2052,12 @@ fn ChatView(
                             let body = if recalled {
                                 view! { <p class="muted">"消息已撤回"</p> }.into_any()
                             } else if is_image {
-                                view! { <a class="image-link" href=image_url target="_blank">"查看图片"</a> }.into_any()
+                                view! {
+                                    <a class="image-preview" href=image_url.clone() target="_blank" rel="noreferrer">
+                                        <img src=image_url.clone() alt="聊天图片"/>
+                                        <span>"打开原图"</span>
+                                    </a>
+                                }.into_any()
                             } else if is_voice {
                                 view! { <p>"[语音] "{voice_seconds}" 秒"</p> }.into_any()
                             } else {
@@ -1309,6 +2098,24 @@ fn Avatar(src: Option<String>, label: String) -> impl IntoView {
     } else {
         view! { <div class="avatar"><img src=src alt="avatar"/></div> }.into_any()
     }
+}
+
+fn scroll_messages_to_bottom(messages_el: NodeRef<Div>) {
+    if let Some(el) = messages_el.get() {
+        el.set_scroll_top(el.scroll_height());
+    }
+
+    leptos::prelude::request_animation_frame(move || {
+        if let Some(el) = messages_el.get() {
+            el.set_scroll_top(el.scroll_height());
+        }
+
+        leptos::prelude::request_animation_frame(move || {
+            if let Some(el) = messages_el.get() {
+                el.set_scroll_top(el.scroll_height());
+            }
+        });
+    });
 }
 
 #[component]
@@ -1458,7 +2265,7 @@ async fn load_home_data() -> Result<(User, HomeData), String> {
         user,
         HomeData {
             friends: list_from_field(&friends, "friends"),
-            groups: list_from_field(&groups, "groups"),
+            groups: group_list_from_field(&groups, "groups"),
             requests: list_from_field(&requests, "requests"),
             deleted: list_from_field(&deleted, "notices"),
             total_unread: notifications
@@ -1476,6 +2283,7 @@ fn open_group_chat(
     page: RwSignal<Page>,
     status: RwSignal<String>,
 ) {
+    messages.set(Vec::new());
     page.set(Page::GroupChat(room_id, name));
     load_chat("group", room_id, messages, status);
 }
@@ -1487,8 +2295,113 @@ fn open_private_chat(
     page: RwSignal<Page>,
     status: RwSignal<String>,
 ) {
+    messages.set(Vec::new());
     page.set(Page::PrivateChat(friend_id, name));
     load_chat("private", friend_id, messages, status);
+}
+
+fn open_group_manage(
+    room_id: i64,
+    name: String,
+    group_manage: RwSignal<Option<GroupManageData>>,
+    page: RwSignal<Page>,
+    status: RwSignal<String>,
+) {
+    page.set(Page::GroupManage(room_id, name.clone()));
+    load_group_manage(room_id, name, group_manage, status);
+}
+
+fn load_group_manage(
+    room_id: i64,
+    room_name: String,
+    group_manage: RwSignal<Option<GroupManageData>>,
+    status: RwSignal<String>,
+) {
+    spawn_local(async move {
+        status.set("正在加载群组管理...".into());
+        let (info, members, applications) = join!(
+            api_get("/group/get_group_view_info.php", json!({ "rid": room_id })),
+            api_get("/group/get_members.php", json!({ "room_id": room_id })),
+            api_get("/group/get_applications.php", json!({ "room_id": room_id }))
+        );
+
+        let info = match info {
+            Ok(data) if is_success(&data) => data,
+            Ok(data) => {
+                status.set(message_of(&data, "群组资料加载失败"));
+                return;
+            }
+            Err(err) => {
+                status.set(err);
+                return;
+            }
+        };
+
+        let mut room: GroupManageRoom =
+            serde_json::from_value(info.get("room").cloned().unwrap_or_default())
+                .unwrap_or_default();
+        if room.room_name.trim().is_empty() {
+            room.room_name = room_name;
+        }
+        if room.owner_name.trim().is_empty() {
+            room.owner_name = "未知".into();
+        }
+
+        let members = match members {
+            Ok(data) if is_success(&data) => list_from_field(&data, "members"),
+            Ok(data) => {
+                status.set(message_of(&data, "成员列表加载失败"));
+                Vec::new()
+            }
+            Err(err) => {
+                status.set(err);
+                Vec::new()
+            }
+        };
+
+        let (applications, application_error) = match applications {
+            Ok(data) if is_success(&data) => {
+                let list = list_from_field(&data, "applications")
+                    .into_iter()
+                    .chain(list_from_field(&data, "applies"))
+                    .chain(list_from_field(&data, "requests"))
+                    .collect();
+                (list, None)
+            }
+            Ok(data) => (
+                Vec::new(),
+                Some(message_of(
+                    &data,
+                    "当前后端未提供入群申请列表接口；处理按钮需要后端补齐列表接口后才能显示。",
+                )),
+            ),
+            Err(err) => (Vec::new(), Some(err)),
+        };
+
+        group_manage.set(Some(GroupManageData {
+            room,
+            members,
+            applications,
+            application_error,
+            is_in_group: info
+                .get("is_in_group")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_owner: info
+                .get("is_owner")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            is_admin: info
+                .get("is_admin")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            can_view_invite: info
+                .get("can_view_invite")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }));
+        status.set(String::new());
+    });
 }
 
 fn load_chat(
@@ -1642,51 +2555,190 @@ fn user_search_result(data: &Value) -> Option<UserSearchResult> {
 }
 
 fn group_search_result(data: &Value) -> Option<GroupSearchResult> {
-    let room = data.get("room")?;
+    let room = data
+        .get("room")
+        .or_else(|| data.get("group"))
+        .or_else(|| data.get("data").and_then(|data| data.get("room")))
+        .or_else(|| data.get("data").and_then(|data| data.get("group")))?;
     Some(GroupSearchResult {
         room_id: room
             .get("id")
             .and_then(value_to_i64)
             .or_else(|| room.get("room_id").and_then(value_to_i64))
+            .or_else(|| room.get("rid").and_then(value_to_i64))
+            .or_else(|| room.get("group_id").and_then(value_to_i64))
             .unwrap_or_default(),
         room_name: room
             .get("room_name")
-            .and_then(Value::as_str)
-            .unwrap_or("未命名群组")
-            .to_string(),
+            .or_else(|| room.get("name"))
+            .or_else(|| room.get("title"))
+            .and_then(value_to_string)
+            .unwrap_or_else(|| "未命名群组".to_string()),
         intro: room
             .get("intro")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+            .or_else(|| room.get("description"))
+            .or_else(|| room.get("desc"))
+            .and_then(value_to_string)
+            .unwrap_or_default(),
         notice: room
             .get("notice")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+            .and_then(value_to_string)
+            .unwrap_or_default(),
         owner_name: room
             .get("owner_name")
-            .and_then(Value::as_str)
-            .unwrap_or("未知")
-            .to_string(),
-        join_type: room
-            .get("join_type")
-            .and_then(value_to_i64)
-            .unwrap_or_default(),
+            .or_else(|| room.get("owner_nickname"))
+            .and_then(value_to_string)
+            .unwrap_or_else(|| "未知".to_string()),
+        join_type: room.get("join_type").and_then(value_to_i64).unwrap_or(1),
         ask_question: room
             .get("ask_question")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
+            .or_else(|| room.get("question"))
+            .and_then(value_to_string)
+            .unwrap_or_default(),
         is_in_group: data
             .get("is_in_group")
-            .and_then(Value::as_bool)
+            .or_else(|| room.get("is_in_group"))
+            .and_then(value_to_bool)
             .unwrap_or(false),
         has_apply: data
             .get("has_apply")
-            .and_then(Value::as_bool)
+            .or_else(|| room.get("has_apply"))
+            .and_then(value_to_bool)
             .unwrap_or(false),
     })
+}
+
+fn public_group_list(data: &Value) -> Vec<Group> {
+    if let Some(groups) = parse_group_vec(data) {
+        return groups
+            .into_iter()
+            .filter(|group| group.room_id > 0)
+            .collect();
+    }
+
+    for path in [
+        &["groups"][..],
+        &["rooms"][..],
+        &["list"][..],
+        &["items"][..],
+        &["data"][..],
+        &["data", "groups"][..],
+        &["data", "rooms"][..],
+        &["data", "list"][..],
+        &["data", "items"][..],
+        &["result", "groups"][..],
+        &["result", "rooms"][..],
+        &["result", "items"][..],
+    ] {
+        if let Some(groups) = value_at_path(data, path).and_then(parse_group_vec) {
+            return groups
+                .into_iter()
+                .filter(|group| group.room_id > 0)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn parse_group_vec(value: &Value) -> Option<Vec<Group>> {
+    let values = value.as_array()?;
+    Some(values.iter().filter_map(group_from_value).collect())
+}
+
+fn group_list_from_field(data: &Value, field: &str) -> Vec<Group> {
+    data.get(field)
+        .and_then(parse_group_vec)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|group| group.room_id > 0)
+        .collect()
+}
+
+fn group_from_value(value: &Value) -> Option<Group> {
+    let room_id = value
+        .get("room_id")
+        .and_then(value_to_i64)
+        .or_else(|| value.get("id").and_then(value_to_i64))
+        .or_else(|| value.get("rid").and_then(value_to_i64))
+        .or_else(|| value.get("group_id").and_then(value_to_i64))
+        .or_else(|| value.get("roomId").and_then(value_to_i64))?;
+    let join_type = value
+        .get("join_type")
+        .and_then(value_to_i64)
+        .filter(|value| *value > 0)
+        .unwrap_or(1);
+    Some(Group {
+        room_id,
+        room_name: value
+            .get("room_name")
+            .or_else(|| value.get("name"))
+            .or_else(|| value.get("title"))
+            .and_then(value_to_string)
+            .filter(|value| !value.trim().is_empty()),
+        intro: value
+            .get("intro")
+            .or_else(|| value.get("description"))
+            .or_else(|| value.get("desc"))
+            .and_then(value_to_string),
+        unread_count: value.get("unread_count").and_then(value_to_i64),
+        join_type,
+        owner_name: value.get("owner_name").and_then(value_to_string),
+        member_count: value.get("member_count").and_then(value_to_i64),
+        is_in_group: value
+            .get("is_in_group")
+            .and_then(value_to_bool)
+            .unwrap_or(false),
+        has_apply: value
+            .get("has_apply")
+            .and_then(value_to_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn open_public_group_detail(room_id: i64, status: RwSignal<String>) {
+    spawn_local(async move {
+        status.set("正在读取群组详情...".into());
+        match api_get("/group/get_group_view_info.php", json!({ "rid": room_id })).await {
+            Ok(data) if is_success(&data) => match group_search_result(&data) {
+                Some(group) => {
+                    if group.is_in_group {
+                        status.set(format!(
+                            "你已加入「{}」，可在我的群组中进入聊天",
+                            group.room_name
+                        ));
+                    } else if group.has_apply {
+                        status.set(format!("「{}」的入群申请正在等待审核", group.room_name));
+                    } else if group.join_type == 1 {
+                        apply_join_with_payload(
+                            room_id,
+                            group.join_type,
+                            String::new(),
+                            String::new(),
+                            None,
+                            status,
+                        );
+                    } else {
+                        status.set(format!(
+                            "「{}」{}，请在首页按群组 ID 搜索后填写验证信息",
+                            group.room_name,
+                            group_join_state_text(false, false, group.join_type)
+                        ));
+                    }
+                }
+                None => status.set("群组详情解析失败".into()),
+            },
+            Ok(data) => status.set(message_of(&data, "群组详情加载失败")),
+            Err(err) => status.set(err),
+        }
+    });
 }
 
 fn friend_state_text(user: &UserSearchResult) -> &'static str {
@@ -1726,8 +2778,44 @@ fn group_join_button_text(join_type: i64) -> &'static str {
     }
 }
 
-fn apply_join(room_id: i64, status: RwSignal<String>) {
-    apply_join_with_payload(room_id, 1, String::new(), String::new(), None, status);
+fn join_type_text(join_type: i64) -> &'static str {
+    match join_type {
+        1 => "直接加入",
+        2 => "自动轮换邀请码",
+        3 => "固定邀请码",
+        4 => "问答审核",
+        _ => "未知规则",
+    }
+}
+
+fn role_text(is_owner: bool, is_admin: bool) -> &'static str {
+    if is_owner {
+        "群主"
+    } else if is_admin {
+        "管理员"
+    } else {
+        "成员"
+    }
+}
+
+fn switch_text(value: i64) -> &'static str {
+    if value == 0 {
+        "关闭"
+    } else {
+        "开启"
+    }
+}
+
+fn mute_text(mute_until: i64, is_muted: bool) -> String {
+    if is_muted {
+        if mute_until > 0 {
+            format!("禁言至 {mute_until}")
+        } else {
+            "禁言中".into()
+        }
+    } else {
+        "可发言".into()
+    }
 }
 
 fn apply_join_with_payload(
@@ -1761,6 +2849,175 @@ fn apply_join_with_payload(
             Err(err) => status.set(err),
         }
     });
+}
+
+fn edit_group_info(
+    room_id: i64,
+    action: &'static str,
+    value: String,
+    refresh: Callback<(i64, String)>,
+    room_name: String,
+    status: RwSignal<String>,
+) {
+    if action == "name" && value.trim().is_empty() {
+        status.set("群组名称不能为空".into());
+        return;
+    }
+    spawn_local(async move {
+        status.set("正在保存群组资料...".into());
+        match api_post(
+            "/group/edit_info.php",
+            json!({ "room_id": room_id, "action": action, "value": value }),
+        )
+        .await
+        {
+            Ok(data) if is_success(&data) => {
+                status.set(message_of(&data, "群组资料已更新"));
+                refresh.run((room_id, room_name));
+            }
+            Ok(data) => status.set(message_of(&data, "群组资料保存失败")),
+            Err(err) => status.set(err),
+        }
+    });
+}
+
+fn update_group_settings(
+    room_id: i64,
+    join_type: i64,
+    fixed_code: String,
+    question: String,
+    answer: String,
+    show_in_list: i64,
+    allow_invite: i64,
+    refresh: Callback<(i64, String)>,
+    room_name: String,
+    status: RwSignal<String>,
+) {
+    spawn_local(async move {
+        status.set("正在保存群组设置...".into());
+        let mut payload = json!({
+            "room_id": room_id,
+            "join_type": join_type,
+            "show_in_list": show_in_list,
+            "allow_invite": allow_invite
+        });
+        if !fixed_code.trim().is_empty() {
+            payload["fixed_code"] = json!(fixed_code.trim());
+        }
+        if !question.trim().is_empty() {
+            payload["question"] = json!(question.trim());
+        }
+        if !answer.trim().is_empty() {
+            payload["answer"] = json!(answer.trim());
+        }
+        match api_post("/group/update_settings.php", payload).await {
+            Ok(data) if is_success(&data) => {
+                status.set(message_of(&data, "群组设置已更新"));
+                refresh.run((room_id, room_name));
+            }
+            Ok(data) => status.set(message_of(&data, "群组设置保存失败")),
+            Err(err) => status.set(err),
+        }
+    });
+}
+
+fn group_simple_action(
+    path: &'static str,
+    payload: Value,
+    fallback: &'static str,
+    refresh: Callback<(i64, String)>,
+    room_name: String,
+    status: RwSignal<String>,
+) {
+    let room_id = payload
+        .get("room_id")
+        .and_then(value_to_i64)
+        .unwrap_or_default();
+    spawn_local(async move {
+        status.set("正在提交群组操作...".into());
+        match api_post(path, payload).await {
+            Ok(data) if is_success(&data) => {
+                status.set(message_of(&data, fallback));
+                refresh.run((room_id, room_name));
+            }
+            Ok(data) => status.set(message_of(&data, "群组操作失败")),
+            Err(err) => status.set(err),
+        }
+    });
+}
+
+fn group_member_action(
+    room_id: i64,
+    target_uid: i64,
+    action: &'static str,
+    refresh: Callback<(i64, String)>,
+    room_name: String,
+    status: RwSignal<String>,
+) {
+    let (path, payload) = match action {
+        "mute" => (
+            "/group/mute_member.php",
+            json!({
+                "room_id": room_id,
+                "target_uid": target_uid,
+                "action": "mute",
+                "minutes": 60
+            }),
+        ),
+        "unmute" => (
+            "/group/mute_member.php",
+            json!({
+                "room_id": room_id,
+                "target_uid": target_uid,
+                "action": "unmute"
+            }),
+        ),
+        "kick" => (
+            "/group/kick_member.php",
+            json!({ "room_id": room_id, "target_uid": target_uid }),
+        ),
+        _ => {
+            status.set("未知成员操作".into());
+            return;
+        }
+    };
+    group_simple_action(path, payload, "成员操作已完成", refresh, room_name, status);
+}
+
+fn group_admin_action(
+    room_id: i64,
+    target_uid: i64,
+    action: &'static str,
+    refresh: Callback<(i64, String)>,
+    room_name: String,
+    status: RwSignal<String>,
+) {
+    group_simple_action(
+        "/group/set_admin.php",
+        json!({ "room_id": room_id, "target_uid": target_uid, "action": action }),
+        "管理员设置已更新",
+        refresh,
+        room_name,
+        status,
+    );
+}
+
+fn handle_group_apply(
+    room_id: i64,
+    apply_id: i64,
+    action: &'static str,
+    refresh: Callback<(i64, String)>,
+    room_name: String,
+    status: RwSignal<String>,
+) {
+    group_simple_action(
+        "/group/handle_apply.php",
+        json!({ "room_id": room_id, "apply_id": apply_id, "action": action }),
+        "入群申请已处理",
+        refresh,
+        room_name,
+        status,
+    );
 }
 
 fn mark_notice_read(id: i64, refresh: Callback<()>, status: RwSignal<String>) {
@@ -1838,9 +3095,16 @@ where
 }
 
 fn is_success(data: &Value) -> bool {
-    data.get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
+    if let Some(value) = data.get("success").and_then(value_to_bool) {
+        return value;
+    }
+    if let Some(value) = data.get("ok").and_then(value_to_bool) {
+        return value;
+    }
+    if let Some(code) = data.get("code").and_then(value_to_i64) {
+        return code == 0 || code == 200;
+    }
+    false
 }
 
 fn message_of(data: &Value, fallback: &str) -> String {
@@ -1875,6 +3139,24 @@ fn message_of(data: &Value, fallback: &str) -> String {
         message
     } else {
         format!("{message}。尝试过：{detail}")
+    }
+}
+
+fn public_group_empty_message(data: &Value) -> String {
+    let endpoint = data
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let base = if is_success(data) {
+        "公开群组接口返回成功，但列表为空"
+    } else {
+        "没有读取到公开群组"
+    };
+    let message = message_of(data, base);
+    if let Some(endpoint) = endpoint {
+        format!("{message}。最终来源：{endpoint}")
+    } else {
+        message
     }
 }
 
@@ -1915,7 +3197,10 @@ fn page_title(page: &Page) -> String {
         Page::PublicGroups => "公开群组".into(),
         Page::Notices => "通知中心".into(),
         Page::Account => "账户管理".into(),
-        Page::GroupChat(_, name) | Page::PrivateChat(_, name) => name.clone(),
+        Page::About => "关于".into(),
+        Page::GroupChat(_, name) | Page::GroupManage(_, name) | Page::PrivateChat(_, name) => {
+            name.clone()
+        }
     }
 }
 
@@ -1926,7 +3211,9 @@ fn page_subtitle(page: &Page) -> &'static str {
         Page::PublicGroups => "浏览并申请加入公开群组",
         Page::Notices => "查看系统消息与未读提醒",
         Page::Account => "更新资料、头像和密码",
+        Page::About => "版本、许可证和项目来源",
         Page::GroupChat(_, _) => "群聊消息",
+        Page::GroupManage(_, _) => "群组资料、成员和权限设置",
         Page::PrivateChat(_, _) => "私聊消息",
     }
 }
