@@ -24,9 +24,24 @@ enum Page {
     Notices,
     Account,
     About,
+    UserDetail(i64),
+    Report(ReportTarget),
     GroupChat(i64, String),
     GroupManage(i64, String),
     PrivateChat(i64, String),
+}
+
+#[derive(Clone, Debug)]
+enum ReportTarget {
+    User {
+        uid: i64,
+        username: String,
+        nickname: String,
+    },
+    Group {
+        room_id: i64,
+        room_name: String,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -101,6 +116,7 @@ struct Message {
     #[serde(default, deserialize_with = "de_opt_i64")]
     from_uid: Option<i64>,
     nickname: Option<String>,
+    avatar: Option<String>,
     content: Option<String>,
     #[serde(default, deserialize_with = "de_opt_i64")]
     msg_type: Option<i64>,
@@ -117,7 +133,6 @@ struct Message {
     can_recall: Option<bool>,
     #[serde(default, deserialize_with = "de_opt_i64")]
     is_recalled: Option<i64>,
-    #[allow(dead_code)]
     #[serde(default, deserialize_with = "de_opt_i64")]
     is_read: Option<i64>,
     is_mentioned: Option<bool>,
@@ -186,6 +201,44 @@ struct UserSearchResult {
     can_add_friend: bool,
 }
 
+#[derive(Clone, Debug, Default, Deserialize)]
+struct UserProfile {
+    #[serde(default, alias = "id", deserialize_with = "de_i64")]
+    uid: i64,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    username: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    nickname: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    avatar: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    remark: Option<String>,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    online_status: Option<String>,
+    #[serde(default, deserialize_with = "de_bool")]
+    is_self: bool,
+    #[serde(default, deserialize_with = "de_bool")]
+    is_friend: bool,
+    #[serde(default, alias = "friend_request_sent", deserialize_with = "de_bool")]
+    request_sent: bool,
+    #[serde(
+        default,
+        alias = "friend_request_received",
+        deserialize_with = "de_bool"
+    )]
+    request_received: bool,
+    #[serde(default, deserialize_with = "de_bool")]
+    is_blocked: bool,
+    #[serde(default, deserialize_with = "de_bool")]
+    can_add_friend: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct UserDetailData {
+    user: UserProfile,
+    created_groups: Vec<Group>,
+}
+
 #[derive(Clone, Debug, Default)]
 struct GroupSearchResult {
     room_id: i64,
@@ -235,6 +288,8 @@ struct GroupMember {
     uid: i64,
     #[serde(default)]
     nickname: String,
+    #[serde(default, deserialize_with = "de_opt_string")]
+    avatar: Option<String>,
     #[serde(default)]
     is_owner: bool,
     #[serde(default)]
@@ -373,6 +428,29 @@ struct AvatarUploadRequest {
     data_base64: String,
 }
 
+#[derive(Serialize)]
+struct ChatFileUploadArgs {
+    req: ChatFileUploadRequest,
+}
+
+#[derive(Clone, Debug)]
+struct PendingFile {
+    filename: String,
+    mime: String,
+    data_base64: String,
+}
+
+#[derive(Serialize)]
+struct ChatFileUploadRequest {
+    kind: String,
+    target_id: i64,
+    file_kind: String,
+    filename: String,
+    mime: String,
+    data_base64: String,
+    duration: Option<i64>,
+}
+
 #[component]
 pub fn App() -> impl IntoView {
     let page = RwSignal::new(Page::Login);
@@ -384,6 +462,7 @@ pub fn App() -> impl IntoView {
     let group_manage = RwSignal::new(None::<GroupManageData>);
     let found_user = RwSignal::new(None::<UserSearchResult>);
     let found_group = RwSignal::new(None::<GroupSearchResult>);
+    let user_detail = RwSignal::new(None::<UserDetailData>);
     let status = RwSignal::new("正在连接 CsAC...".to_string());
     let loading = RwSignal::new(false);
     let dark_mode = RwSignal::new(load_dark_mode());
@@ -465,6 +544,26 @@ pub fn App() -> impl IntoView {
         });
     };
 
+    let open_user_detail = move |uid: i64| {
+        if uid <= 0 {
+            status.set("无效的用户 ID".into());
+            return;
+        }
+        user_detail.set(None);
+        page.set(Page::UserDetail(uid));
+        loading.set(true);
+        spawn_local(async move {
+            match load_user_detail(uid).await {
+                Ok(data) => {
+                    user_detail.set(Some(data));
+                    status.set(String::new());
+                }
+                Err(err) => status.set(err),
+            }
+            loading.set(false);
+        });
+    };
+
     let logout = move |_| {
         spawn_local(async move {
             let _ = api_post("/auth/logout.php", json!({})).await;
@@ -521,6 +620,11 @@ pub fn App() -> impl IntoView {
                                 </div>
                             </div>
                         })}
+                        <button class="ghost wide" on:click=move |_| {
+                            if let Some(user) = me.get_untracked() {
+                                open_user_detail(user.uid);
+                            }
+                        }>"我的资料"</button>
                         <button class="ghost wide" on:click=logout>"退出登录"</button>
                     </Show>
                 </div>
@@ -576,14 +680,28 @@ pub fn App() -> impl IntoView {
                             open_friend=Callback::new(move |friend: Friend| {
                                 let id = friend.friend_id;
                                 let name = friend.display_name.unwrap_or_else(|| format!("用户 {id}"));
+                                clear_friend_unread(home, id);
                                 open_private_chat(id, name, messages, page, status);
+                            })
+                            open_user=Callback::new(move |uid| open_user_detail(uid))
+                            report_group=Callback::new(move |(room_id, room_name): (i64, String)| {
+                                page.set(Page::Report(ReportTarget::Group { room_id, room_name }));
+                                status.set(String::new());
                             })
                             refresh=Callback::new(move |_| refresh_home(false))
                             status=status
                         />
                     }.into_any(),
                     Page::PublicGroups => view! {
-                        <PublicGroupsView groups=public_groups refresh=Callback::new(move |_| open_public_groups()) status=status/>
+                        <PublicGroupsView
+                            groups=public_groups
+                            refresh=Callback::new(move |_| open_public_groups())
+                            report_group=Callback::new(move |(room_id, room_name): (i64, String)| {
+                                page.set(Page::Report(ReportTarget::Group { room_id, room_name }));
+                                status.set(String::new());
+                            })
+                            status=status
+                        />
                     }.into_any(),
                     Page::Notices => view! {
                         <NoticesView notices=notices refresh=Callback::new(move |_| open_notices()) status=status/>
@@ -598,6 +716,36 @@ pub fn App() -> impl IntoView {
                     Page::About => view! {
                         <AboutView/>
                     }.into_any(),
+                    Page::UserDetail(uid) => view! {
+                        <UserDetailView
+                            uid=uid
+                            data=user_detail
+                            my_uid=me.get().map(|u| u.uid).unwrap_or_default()
+                            back=Callback::new(move |_| refresh_home(true))
+                            refresh=Callback::new(move |uid| open_user_detail(uid))
+                            open_private=Callback::new(move |(uid, name): (i64, String)| {
+                                clear_friend_unread(home, uid);
+                                open_private_chat(uid, name, messages, page, status);
+                            })
+                            open_group=Callback::new(move |group: Group| {
+                                let id = group.room_id;
+                                let name = group.room_name.unwrap_or_else(|| format!("群组 {id}"));
+                                open_group_chat(id, name, messages, page, status);
+                            })
+                            report_user=Callback::new(move |target: ReportTarget| {
+                                page.set(Page::Report(target));
+                                status.set(String::new());
+                            })
+                            status=status
+                        />
+                    }.into_any(),
+                    Page::Report(target) => view! {
+                        <ReportView
+                            target=target
+                            back=Callback::new(move |_| refresh_home(true))
+                            status=status
+                        />
+                    }.into_any(),
                     Page::GroupChat(room_id, room_name) => view! {
                         <ChatView
                             kind="group"
@@ -608,6 +756,11 @@ pub fn App() -> impl IntoView {
                             back=Callback::new(move |_| refresh_home(true))
                             manage=Some(Callback::new(move |(room_id, room_name): (i64, String)| {
                                 open_group_manage(room_id, room_name, group_manage, page, status);
+                            }))
+                            open_user=Callback::new(move |uid| open_user_detail(uid))
+                            report_group=Some(Callback::new(move |(room_id, room_name): (i64, String)| {
+                                page.set(Page::Report(ReportTarget::Group { room_id, room_name }));
+                                status.set(String::new());
                             }))
                             status=status
                         />
@@ -625,6 +778,11 @@ pub fn App() -> impl IntoView {
                                 load_group_manage(room_id, room_name, group_manage, status);
                             })
                             home=Callback::new(move |_| refresh_home(true))
+                            open_user=Callback::new(move |uid| open_user_detail(uid))
+                            report_group=Callback::new(move |(room_id, room_name): (i64, String)| {
+                                page.set(Page::Report(ReportTarget::Group { room_id, room_name }));
+                                status.set(String::new());
+                            })
                             status=status
                         />
                     }.into_any(),
@@ -637,6 +795,8 @@ pub fn App() -> impl IntoView {
                             my_uid=me.get().map(|u| u.uid).unwrap_or_default()
                             back=Callback::new(move |_| refresh_home(true))
                             manage=None
+                            open_user=Callback::new(move |uid| open_user_detail(uid))
+                            report_group=None
                             status=status
                         />
                     }.into_any(),
@@ -745,6 +905,8 @@ fn HomeView(
     my_uid: i64,
     open_group: Callback<Group>,
     open_friend: Callback<Friend>,
+    open_user: Callback<i64>,
+    report_group: Callback<(i64, String)>,
     refresh: Callback<()>,
     status: RwSignal<String>,
 ) -> impl IntoView {
@@ -866,15 +1028,22 @@ fn HomeView(
                                         key=|friend| friend.friend_id
                                         children=move |friend| {
                                             let item = friend.clone();
+                                            let profile_uid = friend.friend_id;
+                                            let display_name = friend.display_name.clone().unwrap_or_else(|| "未命名好友".into());
+                                            let username = friend.username.clone().unwrap_or_default();
+                                            let online = strip_html(friend.online_status.as_deref().unwrap_or(""));
                                             view! {
-                                                <button class="row-item conversation-item" on:click=move |_| open_friend.run(item.clone())>
-                                                    <Avatar src=friend.avatar.clone() label=friend.display_name.clone().unwrap_or_default()/>
-                                                    <span class="row-main">
-                                                        <strong>{friend.display_name.unwrap_or_else(|| "未命名好友".into())}</strong>
-                                                        <small>{format!("@{} {}", friend.username.unwrap_or_default(), strip_html(friend.online_status.as_deref().unwrap_or("")))}</small>
-                                                    </span>
+                                                <div class="row-item conversation-item">
+                                                    <button class="avatar-button" type="button" title="查看资料" on:click=move |_| open_user.run(profile_uid)>
+                                                        <Avatar src=friend.avatar.clone() label=display_name.clone()/>
+                                                    </button>
+                                                    <button class="row-main row-open" type="button" on:click=move |_| open_friend.run(item.clone())>
+                                                        <strong>{display_name}</strong>
+                                                        <small>{format!("@{} {}", username, online)}</small>
+                                                    </button>
                                                     <Unread count=friend.unread_count.unwrap_or_default()/>
-                                                </button>
+                                                    <button class="ghost mini-action" type="button" on:click=move |_| open_user.run(profile_uid)>"资料"</button>
+                                                </div>
                                             }
                                         }
                                     />
@@ -1033,6 +1202,7 @@ fn HomeView(
                                                 }>"进入群组"</button>
                                             </Show>
                                             <button class="ghost" type="button" on:click=move |_| clear_result.set(None)>"关闭"</button>
+                                            <button class="ghost" type="button" on:click=move |_| report_group.run((room_id, room_name_value.clone()))>"举报"</button>
                                         </div>
                                     </div>
                                 }
@@ -1056,6 +1226,7 @@ fn HomeView(
                                             <small>{format!("@{}  ID {}", username, add_uid)}</small>
                                             <small>{state_text}</small>
                                         </div>
+                                        <button class="ghost" type="button" on:click=move |_| open_user.run(add_uid)>"查看资料"</button>
                                         <Show
                                             when=move || can_add
                                             fallback=move || view! {
@@ -1134,6 +1305,7 @@ fn FriendAlerts(
 fn PublicGroupsView(
     groups: RwSignal<Vec<Group>>,
     refresh: Callback<()>,
+    report_group: Callback<(i64, String)>,
     status: RwSignal<String>,
 ) -> impl IntoView {
     view! {
@@ -1183,7 +1355,10 @@ fn PublicGroupsView(
                                     </div>
                                     <div class="card-foot">
                                         <span>{format!("ID {}", room_id)}</span>
-                                        <button on:click=move |_| open_public_group_detail(room_id, status)>"查看 / 加入"</button>
+                                        <div class="button-row compact-actions">
+                                            <button on:click=move |_| open_public_group_detail(room_id, status)>"查看 / 加入"</button>
+                                            <button class="ghost" on:click=move |_| report_group.run((room_id, room_name.clone()))>"举报"</button>
+                                        </div>
                                     </div>
                                 </article>
                             }
@@ -1299,11 +1474,20 @@ fn AccountView(
         status.set("正在读取头像...".into());
         read_file_base64(
             file,
-            Callback::new(move |result| match result {
-                Ok(upload) => {
+            5 * 1024 * 1024,
+            "头像不能超过 5MB",
+            "头像读取失败",
+            Callback::new(move |result: Result<PendingFile, String>| match result {
+                Ok(file) => {
                     spawn_local(async move {
                         status.set("正在上传头像...".into());
-                        match upload_avatar_api(upload).await {
+                        match upload_avatar_api(AvatarUploadRequest {
+                            filename: file.filename,
+                            mime: file.mime,
+                            data_base64: file.data_base64,
+                        })
+                        .await
+                        {
                             Ok(data) if is_success(&data) => {
                                 status.set(message_of(&data, "头像已更新"));
                                 refresh.run(());
@@ -1444,7 +1628,7 @@ fn AboutView() -> impl IntoView {
                 <dl class="about-list">
                     <div>
                         <dt>"版本号："</dt>
-                        <dd>"v0.1.2 PreRelease"</dd>
+                        <dd>"v0.2.0"</dd>
                     </div>
                     <div>
                         <dt>"构建框架："</dt>
@@ -1487,6 +1671,268 @@ fn AboutView() -> impl IntoView {
 }
 
 #[component]
+fn UserDetailView(
+    uid: i64,
+    data: RwSignal<Option<UserDetailData>>,
+    my_uid: i64,
+    back: Callback<()>,
+    refresh: Callback<i64>,
+    open_private: Callback<(i64, String)>,
+    open_group: Callback<Group>,
+    report_user: Callback<ReportTarget>,
+    status: RwSignal<String>,
+) -> impl IntoView {
+    view! {
+        <section class="workspace full profile-page">
+            <div class="section-head">
+                <div>
+                    <h2>"用户详情"</h2>
+                    <span>{format!("UID {uid}")}</span>
+                </div>
+                <div class="button-row">
+                    <button class="ghost" on:click=move |_| back.run(())>"返回工作台"</button>
+                    <button class="ghost" on:click=move |_| refresh.run(uid)>"刷新资料"</button>
+                </div>
+            </div>
+
+            <Show
+                when=move || data.get().is_some()
+                fallback=move || view! { <Empty text="正在加载用户资料"/> }
+            >
+                {move || data.get().map(|detail| {
+                    let user = detail.user.clone();
+                    let target_uid = user.uid;
+                    let is_self = user.is_self || target_uid == my_uid;
+                    let nickname = user.nickname.clone().unwrap_or_else(|| format!("用户 {target_uid}"));
+                    let username = user.username.clone().unwrap_or_default();
+                    let remark = user.remark.clone().unwrap_or_default();
+                    let has_remark = !remark.trim().is_empty();
+                    let online = strip_html(user.online_status.as_deref().unwrap_or(""));
+                    let state_text = user_profile_state_text(&user);
+                    let groups_store = StoredValue::new(detail.created_groups.clone());
+                    let groups_count = groups_store.get_value().len();
+                    let add_refresh = Callback::new(move |_| refresh.run(target_uid));
+                    let chat_button = if !is_self && user.is_friend {
+                        let chat_name = nickname.clone();
+                        view! {
+                            <button type="button" on:click=move |_| open_private.run((target_uid, chat_name.clone()))>"发送消息"</button>
+                        }.into_any()
+                    } else {
+                        view! { <></> }.into_any()
+                    };
+                    let add_button = if !is_self && user.can_add_friend {
+                        view! {
+                            <button type="button" on:click=move |_| send_friend_request(target_uid, add_refresh, status)>"添加好友"</button>
+                        }.into_any()
+                    } else {
+                        view! { <></> }.into_any()
+                    };
+                    let report_button = if !is_self {
+                        let report_target = ReportTarget::User {
+                            uid: target_uid,
+                            username: username.clone(),
+                            nickname: nickname.clone(),
+                        };
+                        view! {
+                            <button class="danger" type="button" on:click=move |_| report_user.run(report_target.clone())>"举报用户"</button>
+                        }.into_any()
+                    } else {
+                        view! { <></> }.into_any()
+                    };
+                    view! {
+                        <div class="profile-grid">
+                            <aside class="profile-hero">
+                                <div class="profile-avatar">
+                                    <Avatar src=user.avatar.clone() label=nickname.clone()/>
+                                </div>
+                                <div>
+                                    <span class="eyebrow">{if is_self { "My Profile" } else { "User Profile" }}</span>
+                                    <h2>{nickname.clone()}</h2>
+                                    <p>{if username.trim().is_empty() { format!("UID {target_uid}") } else { format!("@{} · UID {}", username, target_uid) }}</p>
+                                </div>
+                                <div class="profile-actions">
+                                    {chat_button}
+                                    {add_button}
+                                    {report_button}
+                                </div>
+                            </aside>
+
+                            <div class="profile-main">
+                                <section class="profile-card">
+                                    <div class="section-head">
+                                        <h2>"基础资料"</h2>
+                                        <span>{state_text}</span>
+                                    </div>
+                                    <div class="detail-list">
+                                        <div><span>"显示名称"</span><strong>{nickname.clone()}</strong></div>
+                                        <div><span>"账号"</span><strong>{if username.trim().is_empty() { "未公开".to_string() } else { username.clone() }}</strong></div>
+                                        <div><span>"用户 ID"</span><strong>{target_uid}</strong></div>
+                                        <div><span>"在线状态"</span><strong>{if online.trim().is_empty() { "未知".to_string() } else { online.clone() }}</strong></div>
+                                        <Show when=move || has_remark>
+                                            <div><span>"好友备注"</span><strong>{remark.clone()}</strong></div>
+                                        </Show>
+                                    </div>
+                                    <Show when=move || user.request_sent || user.request_received || user.is_blocked>
+                                        <p class="inline-note">{state_text}</p>
+                                    </Show>
+                                </section>
+
+                                <section class="profile-card profile-groups">
+                                    <div class="section-head">
+                                        <h2>{if is_self { "我创建的群组" } else { "TA 创建的群组" }}</h2>
+                                        <span>{format!("{} 个", groups_count)}</span>
+                                    </div>
+                                    <Show
+                                        when=move || !groups_store.get_value().is_empty()
+                                        fallback=move || view! { <Empty text="暂无创建的群组"/> }
+                                    >
+                                        <div class="card-grid profile-group-grid">
+                                            <For
+                                                each=move || groups_store.get_value()
+                                                key=|group| group.room_id
+                                                children=move |group| {
+                                                    let room_id = group.room_id;
+                                                    let room_name = group.room_name.clone().unwrap_or_else(|| format!("群组 {room_id}"));
+                                                    let intro = group.intro.clone().filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "这个群组还没有简介。".into());
+                                                    let group_action = if is_self {
+                                                        let group_item = group.clone();
+                                                        view! {
+                                                            <button on:click=move |_| open_group.run(group_item.clone())>"进入"</button>
+                                                        }.into_any()
+                                                    } else {
+                                                        view! {
+                                                            <button class="ghost" on:click=move |_| open_public_group_detail(room_id, status)>"查看"</button>
+                                                        }.into_any()
+                                                    };
+                                                    view! {
+                                                        <article class="group-card profile-group-card">
+                                                            <div class="group-card-top">
+                                                                <div class="room-icon">"#"</div>
+                                                                <span>{join_type_text(group.join_type)}</span>
+                                                            </div>
+                                                            <h3>{room_name.clone()}</h3>
+                                                            <p>{intro}</p>
+                                                            <div class="card-foot">
+                                                                <span>{format!("ID {}", room_id)}</span>
+                                                                {group_action}
+                                                            </div>
+                                                        </article>
+                                                    }
+                                                }
+                                            />
+                                        </div>
+                                    </Show>
+                                </section>
+                            </div>
+                        </div>
+                    }
+                })}
+            </Show>
+        </section>
+    }
+}
+
+#[component]
+fn ReportView(target: ReportTarget, back: Callback<()>, status: RwSignal<String>) -> impl IntoView {
+    let reason = NodeRef::<Textarea>::new();
+    let anonymous = NodeRef::<Select>::new();
+    let target_store = StoredValue::new(target.clone());
+    let (kind, title, meta) = report_target_display(&target);
+
+    let submit = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let reason_value = reason
+            .get()
+            .map(|el| el.value().trim().to_string())
+            .unwrap_or_default();
+        if reason_value.chars().count() < 10 {
+            status.set("举报原因至少需要 10 个字符".into());
+            return;
+        }
+        let anonymous_value = anonymous
+            .get()
+            .map(|el| el.value())
+            .unwrap_or_else(|| "0".into());
+        let target = target_store.get_value();
+        let payload = match target {
+            ReportTarget::User {
+                uid,
+                username,
+                nickname,
+            } => json!({
+                "type": "user",
+                "uid": uid,
+                "username": username,
+                "nickname": nickname,
+                "reason": reason_value,
+                "anonymous": anonymous_value,
+            }),
+            ReportTarget::Group { room_id, room_name } => json!({
+                "type": "group",
+                "rid": room_id,
+                "room_name": room_name,
+                "reason": reason_value,
+                "anonymous": anonymous_value,
+            }),
+        };
+        spawn_local(async move {
+            status.set("正在提交举报...".into());
+            match api_post("/report/submit_report.php", payload).await {
+                Ok(data) if is_success(&data) => {
+                    status.set(message_of(&data, "举报已提交"));
+                    if let Some(el) = reason.get() {
+                        el.set_value("");
+                    }
+                }
+                Ok(data) => status.set(message_of(&data, "举报提交失败")),
+                Err(err) => status.set(err),
+            }
+        });
+    };
+
+    view! {
+        <section class="workspace full report-page">
+            <div class="section-head">
+                <div>
+                    <h2>"举报中心"</h2>
+                    <span>"提交后将交由网站管理员处理"</span>
+                </div>
+                <button class="ghost" on:click=move |_| back.run(())>"返回工作台"</button>
+            </div>
+            <div class="report-shell">
+                <aside class="report-card report-target-card">
+                    <span class="eyebrow">"Report Target"</span>
+                    <h3>{title}</h3>
+                    <p>{kind}</p>
+                    <div class="meta-list">
+                        <span>{meta}</span>
+                    </div>
+                </aside>
+                <form class="report-card report-form" on:submit=submit>
+                    <div class="report-warning">
+                        <strong>"举报须知"</strong>
+                        <p>"请如实填写举报原因。实名举报会记录你的用户身份，匿名举报不会向处理视图显示你的身份。"</p>
+                    </div>
+                    <label>"举报原因"
+                        <textarea node_ref=reason rows="7" placeholder="请详细描述问题，至少 10 个字符。"></textarea>
+                    </label>
+                    <label>"举报方式"
+                        <select node_ref=anonymous>
+                            <option value="0">"实名举报"</option>
+                            <option value="1">"匿名举报"</option>
+                        </select>
+                    </label>
+                    <div class="button-row">
+                        <button class="danger" type="submit">"提交举报"</button>
+                        <button class="ghost" type="button" on:click=move |_| back.run(())>"取消"</button>
+                    </div>
+                </form>
+            </div>
+        </section>
+    }
+}
+
+#[component]
 fn GroupManageView(
     room_id: i64,
     room_name: String,
@@ -1495,6 +1941,8 @@ fn GroupManageView(
     back: Callback<(i64, String)>,
     refresh: Callback<(i64, String)>,
     home: Callback<()>,
+    open_user: Callback<i64>,
+    report_group: Callback<(i64, String)>,
     status: RwSignal<String>,
 ) -> impl IntoView {
     let name_input = NodeRef::<Input>::new();
@@ -1652,6 +2100,7 @@ fn GroupManageView(
                 <div class="manage-actions">
                     <button class="ghost" on:click=move |_| back.run((room_id, room_name_store.get_value()))>"返回群聊"</button>
                     <button class="ghost" on:click=move |_| refresh_now()>"刷新资料"</button>
+                    <button class="ghost" on:click=move |_| report_group.run((room_id, room_name_store.get_value()))>"举报群组"</button>
                 </div>
             </div>
 
@@ -1844,10 +2293,13 @@ fn GroupManageView(
                                                 let is_muted = member.is_muted;
                                                 let is_member_admin = member.is_admin;
                                                 let member_name = if member.nickname.trim().is_empty() { format!("用户 {uid}") } else { member.nickname.clone() };
+                                                let member_avatar = member.avatar.clone();
                                                 view! {
                                                     <div class="member-row">
-                                                        <Avatar src=None label=member_name.clone()/>
-                                                        <div class="row-main">
+                                                        <button class="avatar-button" type="button" title="查看资料" on:click=move |_| open_user.run(uid)>
+                                                            <Avatar src=member_avatar label=member_name.clone()/>
+                                                        </button>
+                                                        <button class="row-main row-open" type="button" on:click=move |_| open_user.run(uid)>
                                                             <div class="member-title">
                                                                 <strong>{member_name}</strong>
                                                                 <span>"#"{uid}</span>
@@ -1862,7 +2314,7 @@ fn GroupManageView(
                                                                 </Show>
                                                             </div>
                                                             <small>{format!("{} · {}", strip_html(&member.online_status), mute_text(member.mute_until, member.is_muted))}</small>
-                                                        </div>
+                                                        </button>
                                                         <Show when=move || can_operate_member>
                                                             <div class="member-actions">
                                                                 <button class="ghost" on:click=move |_| group_member_action(room_id, uid, if is_muted { "unmute" } else { "mute" }, refresh, room_name_store.get_value(), status)>
@@ -1960,15 +2412,28 @@ fn ChatView(
     my_uid: i64,
     back: Callback<()>,
     manage: Option<Callback<(i64, String)>>,
+    open_user: Callback<i64>,
+    report_group: Option<Callback<(i64, String)>>,
     status: RwSignal<String>,
 ) -> impl IntoView {
     let input = NodeRef::<Textarea>::new();
+    let image_input = NodeRef::<Input>::new();
+    let voice_input = NodeRef::<Input>::new();
+    let voice_duration_input = NodeRef::<Input>::new();
     let messages_el = NodeRef::<Div>::new();
+    let pending_image = RwSignal::new(None::<PendingFile>);
+    let pending_voice = RwSignal::new(None::<PendingFile>);
     let chat_title = title.clone();
     let manage_button = manage.map(|manage| {
         let room_name = chat_title.clone();
         view! {
             <button class="ghost" on:click=move |_| manage.run((target_id, room_name.clone()))>"群管理"</button>
+        }
+    });
+    let report_button = report_group.map(|report| {
+        let room_name = chat_title.clone();
+        view! {
+            <button class="ghost" on:click=move |_| report.run((target_id, room_name.clone()))>"举报群组"</button>
         }
     });
 
@@ -1984,7 +2449,13 @@ fn ChatView(
     let send = move |ev: SubmitEvent| {
         ev.prevent_default();
         let content = input.get().map(|el| el.value()).unwrap_or_default();
-        if content.trim().is_empty() {
+        let image = pending_image.get_untracked();
+        let voice = pending_voice.get_untracked();
+        if content.trim().is_empty() && image.is_none() && voice.is_none() {
+            return;
+        }
+        if image.is_some() && voice.is_some() {
+            status.set("图片和语音请分开发送".into());
             return;
         }
         let path = if kind == "group" {
@@ -1998,17 +2469,119 @@ fn ChatView(
             json!({ "friend_id": target_id, "content": content })
         };
         spawn_local(async move {
-            match api_post(path, payload).await {
+            let result = if let Some(file) = image {
+                upload_chat_file_api(ChatFileUploadRequest {
+                    kind: kind.to_string(),
+                    target_id,
+                    file_kind: "image".into(),
+                    filename: file.filename,
+                    mime: file.mime,
+                    data_base64: file.data_base64,
+                    duration: None,
+                })
+                .await
+            } else if let Some(file) = voice {
+                let duration = voice_duration_input
+                    .get()
+                    .and_then(|el| el.value().trim().parse::<i64>().ok())
+                    .unwrap_or_default();
+                upload_chat_file_api(ChatFileUploadRequest {
+                    kind: kind.to_string(),
+                    target_id,
+                    file_kind: "voice".into(),
+                    filename: file.filename,
+                    mime: file.mime,
+                    data_base64: file.data_base64,
+                    duration: Some(duration),
+                })
+                .await
+            } else {
+                api_post(path, payload).await
+            };
+            match result {
                 Ok(data) if is_success(&data) => {
                     if let Some(el) = input.get() {
                         el.set_value("");
                     }
+                    if let Some(el) = image_input.get() {
+                        el.set_value("");
+                    }
+                    if let Some(el) = voice_input.get() {
+                        el.set_value("");
+                    }
+                    if let Some(el) = voice_duration_input.get() {
+                        el.set_value("");
+                    }
+                    pending_image.set(None);
+                    pending_voice.set(None);
                     load_chat(kind, target_id, messages, status);
                 }
                 Ok(data) => status.set(message_of(&data, "发送失败")),
                 Err(err) => status.set(err),
             }
         });
+    };
+
+    let choose_image = move |ev: Event| {
+        let Some(input_el) = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+        else {
+            return;
+        };
+        let Some(file) = input_el.files().and_then(|files| files.get(0)) else {
+            pending_image.set(None);
+            return;
+        };
+        status.set("正在读取图片...".into());
+        read_file_base64(
+            file,
+            5 * 1024 * 1024,
+            "图片不能超过 5MB",
+            "图片读取失败",
+            Callback::new(move |result| match result {
+                Ok(file) => {
+                    pending_voice.set(None);
+                    if let Some(el) = voice_input.get() {
+                        el.set_value("");
+                    }
+                    pending_image.set(Some(file));
+                    status.set("图片已选择，点击发送上传".into());
+                }
+                Err(err) => status.set(err),
+            }),
+        );
+    };
+
+    let choose_voice = move |ev: Event| {
+        let Some(input_el) = ev
+            .target()
+            .and_then(|target| target.dyn_into::<web_sys::HtmlInputElement>().ok())
+        else {
+            return;
+        };
+        let Some(file) = input_el.files().and_then(|files| files.get(0)) else {
+            pending_voice.set(None);
+            return;
+        };
+        status.set("正在读取语音...".into());
+        read_file_base64(
+            file,
+            10 * 1024 * 1024,
+            "语音不能超过 10MB",
+            "语音读取失败",
+            Callback::new(move |result| match result {
+                Ok(file) => {
+                    pending_image.set(None);
+                    if let Some(el) = image_input.get() {
+                        el.set_value("");
+                    }
+                    pending_voice.set(Some(file));
+                    status.set("语音已选择，点击发送上传".into());
+                }
+                Err(err) => status.set(err),
+            }),
+        );
     };
 
     view! {
@@ -2021,6 +2594,7 @@ fn ChatView(
                 </div>
                 <div class="chat-actions">
                     {manage_button}
+                    {report_button}
                     <button on:click=refresh>"刷新消息"</button>
                 </div>
             </div>
@@ -2039,14 +2613,30 @@ fn ChatView(
                                 msg.nickname.clone().unwrap_or_else(|| format!("用户 {sender}"))
                             };
                             let time = message_time(&msg);
+                            let avatar = msg.avatar.clone();
                             let show_alert = msg.is_mentioned.unwrap_or(false) || msg.reply_to_me.unwrap_or(false);
                             let recalled = msg.is_recalled.unwrap_or_default() != 0;
+                            let read_state = if kind == "private" && is_me && !recalled {
+                                let read = msg.is_read.unwrap_or_default() != 0;
+                                let class_name = if read {
+                                    "read-state read"
+                                } else {
+                                    "read-state unread"
+                                };
+                                view! {
+                                    <em class=class_name>{if read { "已读" } else { "未读" }}</em>
+                                }
+                                .into_any()
+                            } else {
+                                view! { <></> }.into_any()
+                            };
                             let image_url = msg.image_url.clone().filter(|url| !url.trim().is_empty());
                             let voice_url = msg.voice_url.clone().filter(|url| !url.trim().is_empty());
                             let content_url = msg.content.clone().filter(|value| looks_like_media_path(value));
                             let is_image = msg.msg_type == Some(2) || image_url.is_some() || content_url.is_some();
                             let is_voice = msg.msg_type == Some(3) || voice_url.is_some();
                             let image_url = absolute_media(image_url.or(content_url).unwrap_or_default());
+                            let voice_url = absolute_media(voice_url.unwrap_or_default());
                             let voice_seconds = msg.duration.or(msg.voice_duration).unwrap_or_default();
                             let text = msg.content.clone().unwrap_or_default();
                             let body = if recalled {
@@ -2059,22 +2649,55 @@ fn ChatView(
                                     </a>
                                 }.into_any()
                             } else if is_voice {
-                                view! { <p>"[语音] "{voice_seconds}" 秒"</p> }.into_any()
+                                let has_voice_url = !voice_url.trim().is_empty();
+                                view! {
+                                    <div class="voice-preview">
+                                        <div>
+                                            <strong>"语音消息"</strong>
+                                            <span>{format!("{} 秒", voice_seconds.max(0))}</span>
+                                        </div>
+                                        <Show
+                                            when=move || has_voice_url
+                                            fallback=move || view! { <p>"语音文件地址为空"</p> }
+                                        >
+                                            <audio controls preload="metadata" src=voice_url.clone()></audio>
+                                        </Show>
+                                    </div>
+                                }.into_any()
                             } else {
                                 view! { <p>{text}</p> }.into_any()
                             };
+                            let avatar_label = sender_name.clone();
+                            let avatar_node = view! {
+                                <button class="chat-avatar-button" type="button" title="查看发送人资料" on:click=move |_| {
+                                    if sender > 0 {
+                                        open_user.run(sender);
+                                    }
+                                }>
+                                    <Avatar src=avatar label=avatar_label/>
+                                </button>
+                            }.into_any();
+                            let bubble_node = view! {
+                                <div class="bubble">
+                                    <div class="msg-meta">
+                                        <strong>{sender_name}</strong>
+                                        <span>{time}</span>
+                                        {read_state}
+                                        <Show when=move || show_alert>
+                                            <em>"提醒"</em>
+                                        </Show>
+                                    </div>
+                                    {body}
+                                </div>
+                            }.into_any();
+                            let message_body = if is_me {
+                                view! { {bubble_node} {avatar_node} }.into_any()
+                            } else {
+                                view! { {avatar_node} {bubble_node} }.into_any()
+                            };
                             view! {
                                 <div class=class_name>
-                                    <div class="bubble">
-                                        <div class="msg-meta">
-                                            <strong>{sender_name}</strong>
-                                            <span>{time}</span>
-                                            <Show when=move || show_alert>
-                                                <em>"提醒"</em>
-                                            </Show>
-                                        </div>
-                                        {body}
-                                    </div>
+                                    {message_body}
                                 </div>
                             }
                         }
@@ -2082,8 +2705,42 @@ fn ChatView(
                 </Show>
             </div>
             <form class="composer" on:submit=send>
-                <textarea node_ref=input rows="3" placeholder="输入消息。当前桌面版支持文字消息，图片和语音可在原站继续使用。"></textarea>
-                <button class="primary" type="submit">"发送"</button>
+                <textarea node_ref=input rows="3" placeholder="输入文字，或选择图片/语音后发送。"></textarea>
+                <div class="composer-tools">
+                    <label class="file-button">
+                        "图片"
+                        <input node_ref=image_input type="file" accept="image/jpeg,image/png,image/gif,image/webp,image/bmp" on:change=choose_image/>
+                    </label>
+                    <label class="file-button">
+                        "语音"
+                        <input node_ref=voice_input type="file" accept="audio/webm,audio/ogg,audio/mpeg,audio/wav,audio/mp4" on:change=choose_voice/>
+                    </label>
+                    <input class="duration-input" node_ref=voice_duration_input type="number" min="0" placeholder="秒"/>
+                    <button class="primary" type="submit">"发送"</button>
+                </div>
+                <Show when=move || pending_image.get().is_some() || pending_voice.get().is_some()>
+                    <div class="attachment-preview">
+                        {move || {
+                            if let Some(file) = pending_image.get() {
+                                format!("待发送图片：{}", file.filename)
+                            } else if let Some(file) = pending_voice.get() {
+                                format!("待发送语音：{}", file.filename)
+                            } else {
+                                String::new()
+                            }
+                        }}
+                        <button class="ghost" type="button" on:click=move |_| {
+                            pending_image.set(None);
+                            pending_voice.set(None);
+                            if let Some(el) = image_input.get() {
+                                el.set_value("");
+                            }
+                            if let Some(el) = voice_input.get() {
+                                el.set_value("");
+                            }
+                        }>"清除"</button>
+                    </div>
+                </Show>
             </form>
         </section>
     }
@@ -2148,16 +2805,22 @@ fn save_dark_mode(enabled: bool) {
     }
 }
 
-fn read_file_base64(file: web_sys::File, done: Callback<Result<AvatarUploadRequest, String>>) {
-    if file.size() as usize > 5 * 1024 * 1024 {
-        done.run(Err("头像不能超过 5MB".into()));
+fn read_file_base64(
+    file: web_sys::File,
+    max_size: usize,
+    size_message: &'static str,
+    read_message: &'static str,
+    done: Callback<Result<PendingFile, String>>,
+) {
+    if file.size() as usize > max_size {
+        done.run(Err(size_message.into()));
         return;
     }
 
     let filename = file.name();
     let mime = file.type_();
     let Ok(reader) = web_sys::FileReader::new() else {
-        done.run(Err("无法读取头像文件".into()));
+        done.run(Err(read_message.into()));
         return;
     };
     let callback_reader = reader.clone();
@@ -2166,14 +2829,14 @@ fn read_file_base64(file: web_sys::File, done: Callback<Result<AvatarUploadReque
             .result()
             .ok()
             .and_then(|value| value.as_string())
-            .ok_or_else(|| "头像读取失败".to_string())
+            .ok_or_else(|| read_message.to_string())
             .and_then(|data_url| {
                 data_url
                     .split_once(',')
                     .map(|(_, data)| data.to_string())
-                    .ok_or_else(|| "头像数据格式异常".to_string())
+                    .ok_or_else(|| "文件数据格式异常".to_string())
             })
-            .map(|data_base64| AvatarUploadRequest {
+            .map(|data_base64| PendingFile {
                 filename: filename.clone(),
                 mime: mime.clone(),
                 data_base64,
@@ -2184,7 +2847,7 @@ fn read_file_base64(file: web_sys::File, done: Callback<Result<AvatarUploadReque
     callback.forget();
 
     if reader.read_as_data_url(&file).is_err() {
-        done.run(Err("头像读取失败".into()));
+        done.run(Err(read_message.into()));
     }
 }
 
@@ -2276,6 +2939,27 @@ async fn load_home_data() -> Result<(User, HomeData), String> {
     ))
 }
 
+async fn load_user_detail(uid: i64) -> Result<UserDetailData, String> {
+    let info = api_get("/user/get_info.php", json!({ "uid": uid })).await?;
+    if !is_success(&info) {
+        return Err(message_of(&info, "用户资料加载失败"));
+    }
+    let user_value = info
+        .get("user")
+        .cloned()
+        .ok_or_else(|| "用户资料响应缺少 user 字段".to_string())?;
+    let user: UserProfile =
+        serde_json::from_value(user_value).map_err(|_| "用户资料解析失败".to_string())?;
+    let groups = match api_get("/user/get_created_groups.php", json!({ "uid": user.uid })).await {
+        Ok(data) if is_success(&data) => group_list_from_field(&data, "groups"),
+        _ => Vec::new(),
+    };
+    Ok(UserDetailData {
+        user,
+        created_groups: groups,
+    })
+}
+
 fn open_group_chat(
     room_id: i64,
     name: String,
@@ -2298,6 +2982,18 @@ fn open_private_chat(
     messages.set(Vec::new());
     page.set(Page::PrivateChat(friend_id, name));
     load_chat("private", friend_id, messages, status);
+}
+
+fn clear_friend_unread(home: RwSignal<HomeData>, friend_id: i64) {
+    home.update(|data| {
+        if let Some(friend) = data
+            .friends
+            .iter_mut()
+            .find(|friend| friend.friend_id == friend_id)
+        {
+            friend.unread_count = Some(0);
+        }
+    });
 }
 
 fn open_group_manage(
@@ -2755,6 +3451,47 @@ fn friend_state_text(user: &UserSearchResult) -> &'static str {
     }
 }
 
+fn user_profile_state_text(user: &UserProfile) -> &'static str {
+    if user.is_self {
+        "这是你自己的账号"
+    } else if user.is_friend {
+        "已经是好友"
+    } else if user.request_sent {
+        "好友请求已发送"
+    } else if user.request_received {
+        "对方已发来好友请求"
+    } else if user.is_blocked {
+        "当前无法添加"
+    } else if user.can_add_friend {
+        "可以发送好友请求"
+    } else {
+        "暂时无法添加"
+    }
+}
+
+fn report_target_display(target: &ReportTarget) -> (&'static str, String, String) {
+    match target {
+        ReportTarget::User {
+            uid,
+            username,
+            nickname,
+        } => (
+            "被举报对象：用户",
+            nickname.clone(),
+            if username.trim().is_empty() {
+                format!("UID {uid}")
+            } else {
+                format!("@{} · UID {}", username, uid)
+            },
+        ),
+        ReportTarget::Group { room_id, room_name } => (
+            "被举报对象：群组",
+            room_name.clone(),
+            format!("群组 ID {room_id}"),
+        ),
+    }
+}
+
 fn group_join_state_text(is_in_group: bool, has_apply: bool, join_type: i64) -> &'static str {
     if is_in_group {
         "已加入"
@@ -3063,6 +3800,21 @@ async fn upload_avatar_api(req: AvatarUploadRequest) -> Result<Value, String> {
     Ok(response.data)
 }
 
+async fn upload_chat_file_api(req: ChatFileUploadRequest) -> Result<Value, String> {
+    let args =
+        serde_wasm_bindgen::to_value(&ChatFileUploadArgs { req }).map_err(|err| err.to_string())?;
+    let value = invoke("upload_chat_file", args).await;
+    let response: ApiResponse =
+        serde_wasm_bindgen::from_value(value).map_err(|err| err.to_string())?;
+    if response.status == 401 {
+        return Err("登录已失效，请重新登录".into());
+    }
+    if response.status == 403 {
+        return Err(message_of(&response.data, "账号不可用"));
+    }
+    Ok(response.data)
+}
+
 async fn api_request(method: &str, path: &str, params: Value) -> Result<Value, String> {
     let args = serde_wasm_bindgen::to_value(&InvokeArgs {
         req: ApiRequest {
@@ -3198,6 +3950,8 @@ fn page_title(page: &Page) -> String {
         Page::Notices => "通知中心".into(),
         Page::Account => "账户管理".into(),
         Page::About => "关于".into(),
+        Page::UserDetail(_) => "用户详情".into(),
+        Page::Report(_) => "举报中心".into(),
         Page::GroupChat(_, name) | Page::GroupManage(_, name) | Page::PrivateChat(_, name) => {
             name.clone()
         }
@@ -3212,6 +3966,8 @@ fn page_subtitle(page: &Page) -> &'static str {
         Page::Notices => "查看系统消息与未读提醒",
         Page::Account => "更新资料、头像和密码",
         Page::About => "版本、许可证和项目来源",
+        Page::UserDetail(_) => "查看用户资料、好友关系和创建群组",
+        Page::Report(_) => "向网站管理员提交用户或群组举报",
         Page::GroupChat(_, _) => "群聊消息",
         Page::GroupManage(_, _) => "群组资料、成员和权限设置",
         Page::PrivateChat(_, _) => "私聊消息",

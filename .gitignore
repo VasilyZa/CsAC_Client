@@ -1,5 +1,6 @@
 /dist/
 /target/
+/release-assets/
 /.agents/
 /.codex/
 /cschat源码/

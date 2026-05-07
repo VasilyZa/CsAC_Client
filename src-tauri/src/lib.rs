@@ -103,6 +103,17 @@ struct AvatarUploadRequest {
     data_base64: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct ChatFileUploadRequest {
+    kind: String,
+    target_id: i64,
+    file_kind: String,
+    filename: String,
+    mime: String,
+    data_base64: String,
+    duration: Option<i64>,
+}
+
 #[tauri::command]
 async fn api_request(req: ApiRequest) -> Result<ApiResponse, String> {
     if !req.path.starts_with('/') || req.path.contains("://") || req.path.contains("..") {
@@ -305,6 +316,150 @@ async fn upload_avatar(req: AvatarUploadRequest) -> Result<ApiResponse, String> 
         data: json!({
             "success": false,
             "message": last_error.unwrap_or_else(|| "头像上传失败".to_string()),
+            "attempts": attempts
+        }),
+        endpoint: String::new(),
+    })
+}
+
+#[tauri::command]
+async fn upload_chat_file(req: ChatFileUploadRequest) -> Result<ApiResponse, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(req.data_base64.trim())
+        .map_err(|_| "文件数据解析失败".to_string())?;
+    if bytes.is_empty() {
+        return Err("文件为空".into());
+    }
+
+    let is_group = req.kind == "group";
+    let (path, field, max_bytes, fallback_message) = match req.file_kind.as_str() {
+        "image" => {
+            if bytes.len() > 5 * 1024 * 1024 {
+                return Err("图片不能超过 5MB".into());
+            }
+            let path = if is_group {
+                "/message/send_group_msg.php"
+            } else {
+                "/message/send_private_msg.php"
+            };
+            (path, "img", 5 * 1024 * 1024, "图片发送失败")
+        }
+        "voice" => {
+            if bytes.len() > 10 * 1024 * 1024 {
+                return Err("语音不能超过 10MB".into());
+            }
+            (
+                "/message/send_voice_msg.php",
+                "voice",
+                10 * 1024 * 1024,
+                "语音发送失败",
+            )
+        }
+        _ => return Err("未知文件类型".into()),
+    };
+
+    if req.target_id <= 0 {
+        return Err("无效的聊天对象".into());
+    }
+    if bytes.len() > max_bytes {
+        return Err(fallback_message.into());
+    }
+
+    let endpoints = candidate_endpoints(path);
+    let mut last_error = None;
+    let mut attempts = Vec::new();
+
+    for endpoint in endpoints {
+        let mut form = Form::new();
+        if is_group {
+            form = form.text("room_id", req.target_id.to_string());
+        } else {
+            form = form.text("friend_id", req.target_id.to_string());
+        }
+        if req.file_kind == "image" {
+            form = form.text("content", "");
+        } else {
+            form = form.text(
+                "duration",
+                req.duration.unwrap_or_default().max(0).to_string(),
+            );
+        }
+        if let Some(act) = &endpoint.act {
+            form = form.text("act", act.clone());
+        }
+
+        let part = Part::bytes(bytes.clone())
+            .file_name(req.filename.clone())
+            .mime_str(if req.mime.trim().is_empty() {
+                if req.file_kind == "voice" {
+                    "audio/webm"
+                } else {
+                    "application/octet-stream"
+                }
+            } else {
+                req.mime.trim()
+            })
+            .map_err(|err| err.to_string())?;
+        form = form.part(field, part);
+
+        let origin = endpoint_origin(&endpoint.url);
+        let referer = endpoint_referer(
+            &endpoint.url,
+            &json!({
+                "friend_id": if is_group { Value::Null } else { json!(req.target_id) },
+                "room_id": if is_group { json!(req.target_id) } else { Value::Null },
+            }),
+        )
+        .unwrap_or_else(|| format!("{origin}/"));
+        let mut builder = HTTP
+            .post(&endpoint.url)
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+            .header("Cache-Control", "no-cache")
+            .header("Pragma", "no-cache")
+            .header("X-Requested-With", "XMLHttpRequest")
+            .header("Origin", origin)
+            .header("Referer", referer)
+            .multipart(form);
+
+        if let Some(cookie) = cookie_header_for(&endpoint.base) {
+            builder = builder.header("Cookie", cookie);
+        }
+
+        let response = match builder.send().await {
+            Ok(response) => response,
+            Err(err) => {
+                last_error = Some(err.to_string());
+                continue;
+            }
+        };
+        remember_response_cookies(&endpoint.base, response.headers())?;
+        let status = response.status().as_u16();
+        let text = response.text().await.map_err(|err| err.to_string())?;
+        let data = parse_response_text(&text, status, &endpoint.url, path);
+        attempts.push(endpoint_attempt(&endpoint.url, status, &data));
+
+        if should_try_next_endpoint(path, status, &data) {
+            last_error = Some(message_from_value(&data));
+            continue;
+        }
+
+        if is_success_response(&data) {
+            remember_active_base(&endpoint.base)?;
+        }
+
+        return Ok(ApiResponse {
+            status,
+            data,
+            endpoint: endpoint.url,
+        });
+    }
+
+    Ok(ApiResponse {
+        status: 0,
+        data: json!({
+            "success": false,
+            "message": last_error.unwrap_or_else(|| fallback_message.to_string()),
             "attempts": attempts
         }),
         endpoint: String::new(),
@@ -1038,7 +1193,11 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![api_request, upload_avatar])
+        .invoke_handler(tauri::generate_handler![
+            api_request,
+            upload_avatar,
+            upload_chat_file
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
