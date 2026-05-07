@@ -154,6 +154,19 @@ struct UserSearchResult {
     can_add_friend: bool,
 }
 
+#[derive(Clone, Debug, Default)]
+struct GroupSearchResult {
+    room_id: i64,
+    room_name: String,
+    intro: String,
+    notice: String,
+    owner_name: String,
+    join_type: i64,
+    ask_question: String,
+    is_in_group: bool,
+    has_apply: bool,
+}
+
 fn de_i64<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: Deserializer<'de>,
@@ -220,6 +233,7 @@ pub fn App() -> impl IntoView {
     let notices = RwSignal::new(Vec::<Notice>::new());
     let messages = RwSignal::new(Vec::<Message>::new());
     let found_user = RwSignal::new(None::<UserSearchResult>);
+    let found_group = RwSignal::new(None::<GroupSearchResult>);
     let status = RwSignal::new("正在连接 CsAC...".to_string());
     let loading = RwSignal::new(false);
     let dark_mode = RwSignal::new(load_dark_mode());
@@ -321,7 +335,7 @@ pub fn App() -> impl IntoView {
 
                 <nav class="nav">
                     <button class:active=move || matches!(page.get(), Page::Home) on:click=move |_| refresh_home(true)>"主页"</button>
-                    <button class:active=move || matches!(page.get(), Page::PublicGroups) on:click=move |_| open_public_groups()>"公开群"</button>
+                    <button class:active=move || matches!(page.get(), Page::PublicGroups) on:click=move |_| open_public_groups()>"公开群组"</button>
                     <button class:active=move || matches!(page.get(), Page::Notices) on:click=move |_| open_notices()>
                         "通知"
                         <Show when=move || { home.get().total_unread > 0 }>
@@ -393,6 +407,7 @@ pub fn App() -> impl IntoView {
                         <HomeView
                             home=home
                             found_user=found_user
+                            found_group=found_group
                             my_uid=me.get().map(|u| u.uid).unwrap_or_default()
                             open_group=Callback::new(move |group: Group| {
                                 let id = group.room_id;
@@ -544,6 +559,7 @@ fn RegisterView(
 fn HomeView(
     home: RwSignal<HomeData>,
     found_user: RwSignal<Option<UserSearchResult>>,
+    found_group: RwSignal<Option<GroupSearchResult>>,
     my_uid: i64,
     open_group: Callback<Group>,
     open_friend: Callback<Friend>,
@@ -553,6 +569,8 @@ fn HomeView(
     let group_id = NodeRef::<Input>::new();
     let user_id = NodeRef::<Input>::new();
     let room_name = NodeRef::<Input>::new();
+    let join_code = NodeRef::<Input>::new();
+    let join_answer = NodeRef::<Input>::new();
 
     let create_group = move |ev: SubmitEvent| {
         ev.prevent_default();
@@ -575,13 +593,24 @@ fn HomeView(
             .get()
             .and_then(|el| el.value().trim().parse::<i64>().ok())
             .unwrap_or_default();
-        if id > 0 {
-            status.set(format!(
-                "已记录群组 ID {id}。如果已加入，请从我的群组打开；未加入可到公开群申请。"
-            ));
-        } else {
+        if id <= 0 {
             status.set("请输入有效群组编号".into());
+            return;
         }
+        spawn_local(async move {
+            status.set("正在查找群组...".into());
+            match api_get("/group/get_group_view_info.php", json!({ "rid": id })).await {
+                Ok(data) if is_success(&data) => match group_search_result(&data) {
+                    Some(group) => {
+                        status.set(format!("找到群组：{}", group.room_name));
+                        found_group.set(Some(group));
+                    }
+                    None => status.set("找到群组，但资料解析失败".into()),
+                },
+                Ok(data) => status.set(message_of(&data, "未找到该群组")),
+                Err(err) => status.set(err),
+            }
+        });
     };
 
     let search_user = move |ev: SubmitEvent| {
@@ -690,19 +719,110 @@ fn HomeView(
             </section>
 
             <section class="workspace tools">
-                <div class="section-head"><h2>"快速操作"</h2></div>
-                <form class="inline-form" on:submit=create_group>
-                    <input node_ref=room_name placeholder="新群组名称"/>
-                    <button type="submit">"创建群组"</button>
-                </form>
-                <form class="inline-form" on:submit=search_group>
-                    <input node_ref=group_id placeholder="群组编号"/>
-                    <button type="submit">"查找群"</button>
-                </form>
-                <form class="inline-form" on:submit=search_user>
-                    <input node_ref=user_id placeholder="用户 ID"/>
-                    <button type="submit">"查找用户"</button>
-                </form>
+                <div class="section-head">
+                    <h2>"快速操作"</h2>
+                    <span>"群组与好友"</span>
+                </div>
+                <div class="action-stack">
+                    <form class="inline-form action-form" on:submit=create_group>
+                        <div>
+                            <strong>"创建群组"</strong>
+                            <small>"输入名称后立即创建并加入"</small>
+                        </div>
+                        <input node_ref=room_name placeholder="新群组名称"/>
+                        <button type="submit">"创建"</button>
+                    </form>
+                    <form class="inline-form action-form" on:submit=search_group>
+                        <div>
+                            <strong>"查找群组"</strong>
+                            <small>"按群组编号搜索并申请加入"</small>
+                        </div>
+                        <input node_ref=group_id placeholder="群组编号"/>
+                        <button type="submit">"查找"</button>
+                    </form>
+                    <form class="inline-form action-form" on:submit=search_user>
+                        <div>
+                            <strong>"查找用户"</strong>
+                            <small>"按用户 ID 添加好友"</small>
+                        </div>
+                        <input node_ref=user_id placeholder="用户 ID"/>
+                        <button type="submit">"查找"</button>
+                    </form>
+                </div>
+                <Show when=move || found_group.get().is_some()>
+                    {move || found_group.get().map(|group| {
+                        let room_id = group.room_id;
+                        let room_name_value = group.room_name.clone();
+                        let intro = if group.intro.trim().is_empty() { "这个群组还没有简介。".to_string() } else { group.intro.clone() };
+                        let notice = group.notice.clone();
+                        let has_notice = !notice.trim().is_empty();
+                        let notice_text = format!("公告：{}", notice);
+                        let owner = group.owner_name.clone();
+                        let join_type = group.join_type;
+                        let is_in_group = group.is_in_group;
+                        let has_apply = group.has_apply;
+                        let question = group.ask_question.clone();
+                        let clear_result = found_group;
+                        let open_group_result = open_group;
+                        let refresh_home = refresh;
+                        let after_join = Callback::new(move |_| {
+                            clear_result.set(None);
+                            refresh_home.run(());
+                        });
+                        let open_room_name = StoredValue::new(room_name_value.clone());
+                        view! {
+                            <div class="search-result group-result">
+                                <div class="room-icon">"#"</div>
+                                <div class="row-main">
+                                    <div class="result-title">
+                                        <strong>{room_name_value.clone()}</strong>
+                                        <span>{group_join_state_text(is_in_group, has_apply, join_type)}</span>
+                                    </div>
+                                    <small>{format!("群组 ID {} · 创建者 {}", room_id, owner)}</small>
+                                    <p>{intro}</p>
+                                    <Show when=move || has_notice>
+                                        <small>{notice_text.clone()}</small>
+                                    </Show>
+                                    <Show when=move || !is_in_group && !has_apply && (join_type == 2 || join_type == 3)>
+                                        <input node_ref=join_code placeholder="输入邀请码"/>
+                                    </Show>
+                                    <Show when=move || !is_in_group && !has_apply && join_type == 4>
+                                        <div class="question-box">
+                                            <small>{if question.trim().is_empty() { "该群组需要回答入群问题。".to_string() } else { format!("问题：{}", question) }}</small>
+                                            <input node_ref=join_answer placeholder="输入答案"/>
+                                        </div>
+                                    </Show>
+                                </div>
+                                <div class="result-actions">
+                                    <Show
+                                        when=move || is_in_group
+                                        fallback=move || view! {
+                                            <Show
+                                                when=move || !has_apply
+                                            >
+                                                    <button type="button" on:click=move |_| {
+                                                        let code = join_code.get().map(|el| el.value()).unwrap_or_default();
+                                                        let answer = join_answer.get().map(|el| el.value()).unwrap_or_default();
+                                                        apply_join_with_payload(room_id, join_type, code, answer, Some(after_join), status);
+                                                    }>{group_join_button_text(join_type)}</button>
+                                            </Show>
+                                        }
+                                    >
+                                        <button type="button" on:click=move |_| {
+                                            open_group_result.run(Group {
+                                                room_id,
+                                                room_name: Some(open_room_name.get_value()),
+                                                intro: None,
+                                                unread_count: None,
+                                            });
+                                        }>"进入群组"</button>
+                                    </Show>
+                                    <button class="ghost" type="button" on:click=move |_| clear_result.set(None)>"关闭"</button>
+                                </div>
+                            </div>
+                        }
+                    })}
+                </Show>
                 <Show when=move || found_user.get().is_some()>
                     {move || found_user.get().map(|user| {
                         let add_uid = user.uid;
@@ -1521,6 +1641,54 @@ fn user_search_result(data: &Value) -> Option<UserSearchResult> {
     })
 }
 
+fn group_search_result(data: &Value) -> Option<GroupSearchResult> {
+    let room = data.get("room")?;
+    Some(GroupSearchResult {
+        room_id: room
+            .get("id")
+            .and_then(value_to_i64)
+            .or_else(|| room.get("room_id").and_then(value_to_i64))
+            .unwrap_or_default(),
+        room_name: room
+            .get("room_name")
+            .and_then(Value::as_str)
+            .unwrap_or("未命名群组")
+            .to_string(),
+        intro: room
+            .get("intro")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        notice: room
+            .get("notice")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        owner_name: room
+            .get("owner_name")
+            .and_then(Value::as_str)
+            .unwrap_or("未知")
+            .to_string(),
+        join_type: room
+            .get("join_type")
+            .and_then(value_to_i64)
+            .unwrap_or_default(),
+        ask_question: room
+            .get("ask_question")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+        is_in_group: data
+            .get("is_in_group")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        has_apply: data
+            .get("has_apply")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
 fn friend_state_text(user: &UserSearchResult) -> &'static str {
     if user.is_friend {
         "已经是好友，可在好友列表进入私聊"
@@ -1535,10 +1703,61 @@ fn friend_state_text(user: &UserSearchResult) -> &'static str {
     }
 }
 
+fn group_join_state_text(is_in_group: bool, has_apply: bool, join_type: i64) -> &'static str {
+    if is_in_group {
+        "已加入"
+    } else if has_apply {
+        "等待审核"
+    } else {
+        match join_type {
+            1 => "可直接加入",
+            2 | 3 => "需要邀请码",
+            4 => "需要回答问题",
+            _ => "可申请加入",
+        }
+    }
+}
+
+fn group_join_button_text(join_type: i64) -> &'static str {
+    match join_type {
+        2 | 3 => "用邀请码加入",
+        4 => "提交答案",
+        _ => "加入群组",
+    }
+}
+
 fn apply_join(room_id: i64, status: RwSignal<String>) {
+    apply_join_with_payload(room_id, 1, String::new(), String::new(), None, status);
+}
+
+fn apply_join_with_payload(
+    room_id: i64,
+    join_type: i64,
+    code: String,
+    answer: String,
+    refresh: Option<Callback<()>>,
+    status: RwSignal<String>,
+) {
     spawn_local(async move {
-        match api_post("/group/apply_join.php", json!({ "room_id": room_id })).await {
-            Ok(data) => status.set(message_of(&data, "已提交入群申请")),
+        let mut payload = json!({ "room_id": room_id });
+        if join_type == 2 || join_type == 3 {
+            if code.trim().is_empty() {
+                status.set("请输入邀请码".into());
+                return;
+            }
+            payload["code"] = json!(code.trim());
+        }
+        if join_type == 4 {
+            payload["answer"] = json!(answer.trim());
+        }
+        match api_post("/group/apply_join.php", payload).await {
+            Ok(data) if is_success(&data) => {
+                status.set(message_of(&data, "已提交加入群组申请"));
+                if let Some(refresh) = refresh {
+                    refresh.run(());
+                }
+            }
+            Ok(data) => status.set(message_of(&data, "加入群组失败")),
             Err(err) => status.set(err),
         }
     });
@@ -1693,7 +1912,7 @@ fn page_title(page: &Page) -> String {
         Page::Login => "登录".into(),
         Page::Register => "注册".into(),
         Page::Home => "工作台".into(),
-        Page::PublicGroups => "公开群".into(),
+        Page::PublicGroups => "公开群组".into(),
         Page::Notices => "通知中心".into(),
         Page::Account => "账户管理".into(),
         Page::GroupChat(_, name) | Page::PrivateChat(_, name) => name.clone(),

@@ -654,9 +654,75 @@ h3 {
   align-content: start;
 }
 
-.tools .inline-form {
-  grid-template-columns: minmax(0, 1fr) 110px;
+.action-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.tools .action-form {
+  grid-template-columns: minmax(160px, 0.9fr) minmax(0, 1fr) 96px;
   align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e7edf4;
+  border-radius: 8px;
+  background: rgba(248, 251, 254, 0.8);
+}
+
+.action-form > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.action-form strong {
+  color: #1f2937;
+}
+
+.group-result {
+  align-items: flex-start;
+  margin-top: 14px;
+  border-color: #b8d8ff;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef6ff 100%);
+}
+
+.group-result .row-main {
+  gap: 8px;
+}
+
+.group-result p {
+  margin-bottom: 0;
+  color: #435367;
+  line-height: 1.6;
+  white-space: normal;
+}
+
+.result-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.result-title span {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #e0f2fe;
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.question-box {
+  display: grid;
+  gap: 8px;
+}
+
+.result-actions {
+  display: grid;
+  gap: 8px;
+  flex: 0 0 118px;
 }
 
 .alerts {
@@ -1029,6 +1095,29 @@ h3 {
   box-shadow: 0 14px 28px rgba(0, 0, 0, 0.26);
 }
 
+.app-shell.dark .tools .action-form {
+  background: rgba(15, 23, 42, 0.58);
+  border-color: rgba(51, 65, 85, 0.86);
+}
+
+.app-shell.dark .action-form strong {
+  color: #f8fafc;
+}
+
+.app-shell.dark .group-result {
+  background: rgba(12, 74, 110, 0.24);
+  border-color: rgba(56, 189, 248, 0.32);
+}
+
+.app-shell.dark .group-result p {
+  color: #cbd5e1;
+}
+
+.app-shell.dark .result-title span {
+  background: rgba(56, 189, 248, 0.18);
+  color: #bae6fd;
+}
+
 .app-shell.dark .notice-line.true,
 .app-shell.dark .search-result {
   background: rgba(12, 74, 110, 0.22);
@@ -1168,7 +1257,8 @@ h3 {
   }
 
   .stat-strip,
-  .tools .inline-form {
+  .tools .inline-form,
+  .tools .action-form {
     grid-template-columns: 1fr;
   }
 
@@ -1177,6 +1267,15 @@ h3 {
   .notice-line,
   .search-result {
     align-items: flex-start;
+  }
+
+  .result-title,
+  .result-actions {
+    width: 100%;
+  }
+
+  .result-actions {
+    flex: 1 1 auto;
   }
 
   .notice-actions {
