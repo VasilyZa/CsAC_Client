@@ -510,7 +510,7 @@ pub fn App() -> impl IntoView {
         }
         loading.set(true);
         spawn_local(async move {
-            match api_get("/group/get_public_list.php", json!({})).await {
+            match api_get("/group/get_public_list", json!({})).await {
                 Ok(data) => {
                     let groups = public_group_list(&data);
                     public_groups.set(groups);
@@ -533,7 +533,7 @@ pub fn App() -> impl IntoView {
         }
         loading.set(true);
         spawn_local(async move {
-            match api_get("/user/get_notice_list.php", json!({})).await {
+            match api_get("/user/get_notice_list", json!({})).await {
                 Ok(data) => {
                     notices.set(list_from_field(&data, "notices"));
                     status.set(String::new());
@@ -566,7 +566,7 @@ pub fn App() -> impl IntoView {
 
     let logout = move |_| {
         spawn_local(async move {
-            let _ = api_post("/auth/logout.php", json!({})).await;
+            let _ = api_post("/auth/logout", json!({})).await;
             me.set(None);
             home.set(HomeData::default());
             page.set(Page::Login);
@@ -630,7 +630,7 @@ pub fn App() -> impl IntoView {
                 </div>
             </aside>
 
-            <main class="content">
+            <main class="content" class:chat-mode=move || matches!(page.get(), Page::GroupChat(_, _) | Page::PrivateChat(_, _))>
                 <header class="topbar">
                     <div>
                         <h1>{move || page_title(&page.get())}</h1>
@@ -822,7 +822,7 @@ fn LoginView(
         spawn_local(async move {
             status.set("正在登录...".into());
             match api_post(
-                "/auth/login.php",
+                "/auth/login",
                 json!({ "username": username_value, "pwd": pwd_value }),
             )
             .await
@@ -871,7 +871,7 @@ fn RegisterView(
         });
         spawn_local(async move {
             status.set("正在注册...".into());
-            match api_post("/auth/register.php", payload).await {
+            match api_post("/auth/register", payload).await {
                 Ok(data) if is_success(&data) => on_done.run(()),
                 Ok(data) => status.set(message_of(&data, "注册失败")),
                 Err(err) => status.set(err),
@@ -920,7 +920,7 @@ fn HomeView(
         ev.prevent_default();
         let name = room_name.get().map(|el| el.value()).unwrap_or_default();
         spawn_local(async move {
-            match api_post("/group/create.php", json!({ "room_name": name })).await {
+            match api_post("/group/create", json!({ "room_name": name })).await {
                 Ok(data) if is_success(&data) => {
                     status.set("群组已创建".into());
                     refresh.run(());
@@ -943,7 +943,7 @@ fn HomeView(
         }
         spawn_local(async move {
             status.set("正在查找群组...".into());
-            match api_get("/group/get_group_view_info.php", json!({ "rid": id })).await {
+            match api_get("/group/get_group_view_info", json!({ "rid": id })).await {
                 Ok(data) if is_success(&data) => match group_search_result(&data) {
                     Some(group) => {
                         status.set(format!("找到群组：{}", group.room_name));
@@ -968,7 +968,7 @@ fn HomeView(
             return;
         }
         spawn_local(async move {
-            match api_get("/user/get_info.php", json!({ "uid": uid })).await {
+            match api_get("/user/get_info", json!({ "uid": uid })).await {
                 Ok(data) if is_success(&data) => match user_search_result(&data) {
                     Some(user) => {
                         status.set(format!("找到用户：{}", user.nickname));
@@ -1446,7 +1446,7 @@ fn AccountView(
         spawn_local(async move {
             status.set("正在更新显示名称...".into());
             match api_post(
-                "/user/update_profile.php",
+                "/user/update_profile",
                 json!({ "action": "nickname", "nickname": value }),
             )
             .await
@@ -1520,7 +1520,7 @@ fn AccountView(
         spawn_local(async move {
             status.set("正在修改密码...".into());
             match api_post(
-                "/user/update_profile.php",
+                "/user/update_profile",
                 json!({
                     "action": "password",
                     "old_password": old_value,
@@ -1628,7 +1628,7 @@ fn AboutView() -> impl IntoView {
                 <dl class="about-list">
                     <div>
                         <dt>"版本号："</dt>
-                        <dd>"v0.2.0"</dd>
+                        <dd>"v0.3.0"</dd>
                     </div>
                     <div>
                         <dt>"构建框架："</dt>
@@ -1640,7 +1640,7 @@ fn AboutView() -> impl IntoView {
                     </div>
                     <div>
                         <dt>"运行模式："</dt>
-                        <dd>"兼容 CsAC / cschat 当前接口"</dd>
+                        <dd>"UniCsAC 统一 API"</dd>
                     </div>
                 </dl>
             </div>
@@ -1877,7 +1877,7 @@ fn ReportView(target: ReportTarget, back: Callback<()>, status: RwSignal<String>
         };
         spawn_local(async move {
             status.set("正在提交举报...".into());
-            match api_post("/report/submit_report.php", payload).await {
+            match api_post("/report/submit_report", payload).await {
                 Ok(data) if is_success(&data) => {
                     status.set(message_of(&data, "举报已提交"));
                     if let Some(el) = reason.get() {
@@ -2049,7 +2049,7 @@ fn GroupManageView(
 
     let reset_invite = move |_| {
         group_simple_action(
-            "/group/reset_invite_code.php",
+            "/group/reset_invite_code",
             json!({ "room_id": room_id }),
             "邀请码已重置",
             refresh,
@@ -2069,7 +2069,7 @@ fn GroupManageView(
             return;
         }
         group_simple_action(
-            "/group/transfer.php",
+            "/group/transfer",
             json!({ "room_id": room_id, "target_uid": target_uid }),
             "群组转让申请已发送",
             refresh,
@@ -2080,7 +2080,7 @@ fn GroupManageView(
 
     let disband = move |_| {
         group_simple_action(
-            "/group/disband.php",
+            "/group/disband",
             json!({ "room_id": room_id }),
             "群组已提交解散",
             Callback::new(move |_| home.run(())),
@@ -2345,7 +2345,7 @@ fn GroupManageView(
                                             when=move || !has_application_error
                                             fallback=move || view! {
                                                 <div class="empty subtle">
-                                                    {application_error_store.get_value().unwrap_or_else(|| "当前后端未提供申请列表接口。".into())}
+                                                    {application_error_store.get_value().unwrap_or_else(|| "入群申请列表加载失败。".into())}
                                                 </div>
                                             }
                                         >
@@ -2459,9 +2459,9 @@ fn ChatView(
             return;
         }
         let path = if kind == "group" {
-            "/message/send_group_msg.php"
+            "/message/send_group_msg"
         } else {
-            "/message/send_private_msg.php"
+            "/message/send_private_msg"
         };
         let payload = if kind == "group" {
             json!({ "room_id": target_id, "content": content })
@@ -2585,17 +2585,17 @@ fn ChatView(
     };
 
     view! {
-        <section class="chat-layout">
+        <section class=if kind == "group" { "chat-layout group-chat" } else { "chat-layout private-chat" }>
             <div class="chat-header">
-                <button class="ghost" on:click=move |_| back.run(())>"返回"</button>
-                <div>
+                <button class="ghost back-button" on:click=move |_| back.run(())>"返回"</button>
+                <div class="chat-title-block">
                     <h2>{title}</h2>
                     <span>{if kind == "group" { format!("群组 ID {target_id}") } else { format!("用户 ID {target_id}") }}</span>
                 </div>
                 <div class="chat-actions">
                     {manage_button}
                     {report_button}
-                    <button on:click=refresh>"刷新消息"</button>
+                    <button class="primary" on:click=refresh>"刷新消息"</button>
                 </div>
             </div>
             <div class="messages" node_ref=messages_el>
@@ -2705,7 +2705,7 @@ fn ChatView(
                 </Show>
             </div>
             <form class="composer" on:submit=send>
-                <textarea node_ref=input rows="3" placeholder="输入文字，或选择图片/语音后发送。"></textarea>
+                <textarea node_ref=input rows="3" placeholder="输入消息，按发送同步到 UniCsAC"></textarea>
                 <div class="composer-tools">
                     <label class="file-button">
                         "图片"
@@ -2905,18 +2905,18 @@ fn link_segments(text: &str) -> Vec<LinkSegment> {
 }
 
 async fn load_home_data() -> Result<(User, HomeData), String> {
-    let info = api_get("/user/get_info.php", json!({})).await?;
+    let info = api_get("/user/get_info", json!({})).await?;
     if !is_success(&info) {
         return Err("请先登录".to_string());
     }
     let user = serde_json::from_value(info.get("user").cloned().unwrap_or_default())
         .map_err(|_| "用户信息解析失败".to_string())?;
     let (friends, groups, notifications, requests, deleted) = join!(
-        api_get("/user/get_friends.php", json!({})),
-        api_get("/user/get_groups.php", json!({})),
-        api_get("/user/get_notifications.php", json!({})),
-        api_get("/friend/get_friend_requests.php", json!({})),
-        api_get("/friend/get_deleted_notices.php", json!({}))
+        api_get("/user/get_friends", json!({})),
+        api_get("/user/get_groups", json!({})),
+        api_get("/user/get_notifications", json!({})),
+        api_get("/friend/get_friend_requests", json!({})),
+        api_get("/friend/get_deleted_notices", json!({}))
     );
     let friends = friends.unwrap_or_default();
     let groups = groups.unwrap_or_default();
@@ -2940,7 +2940,7 @@ async fn load_home_data() -> Result<(User, HomeData), String> {
 }
 
 async fn load_user_detail(uid: i64) -> Result<UserDetailData, String> {
-    let info = api_get("/user/get_info.php", json!({ "uid": uid })).await?;
+    let info = api_get("/user/get_info", json!({ "uid": uid })).await?;
     if !is_success(&info) {
         return Err(message_of(&info, "用户资料加载失败"));
     }
@@ -2950,7 +2950,7 @@ async fn load_user_detail(uid: i64) -> Result<UserDetailData, String> {
         .ok_or_else(|| "用户资料响应缺少 user 字段".to_string())?;
     let user: UserProfile =
         serde_json::from_value(user_value).map_err(|_| "用户资料解析失败".to_string())?;
-    let groups = match api_get("/user/get_created_groups.php", json!({ "uid": user.uid })).await {
+    let groups = match api_get("/user/get_created_groups", json!({ "uid": user.uid })).await {
         Ok(data) if is_success(&data) => group_list_from_field(&data, "groups"),
         _ => Vec::new(),
     };
@@ -3016,9 +3016,9 @@ fn load_group_manage(
     spawn_local(async move {
         status.set("正在加载群组管理...".into());
         let (info, members, applications) = join!(
-            api_get("/group/get_group_view_info.php", json!({ "rid": room_id })),
-            api_get("/group/get_members.php", json!({ "room_id": room_id })),
-            api_get("/group/get_applications.php", json!({ "room_id": room_id }))
+            api_get("/group/get_group_view_info", json!({ "rid": room_id })),
+            api_get("/group/get_members", json!({ "room_id": room_id })),
+            api_get("/group/get_applications", json!({ "room_id": room_id }))
         );
 
         let info = match info {
@@ -3066,10 +3066,7 @@ fn load_group_manage(
             }
             Ok(data) => (
                 Vec::new(),
-                Some(message_of(
-                    &data,
-                    "当前后端未提供入群申请列表接口；处理按钮需要后端补齐列表接口后才能显示。",
-                )),
+                Some(message_of(&data, "入群申请列表加载失败。")),
             ),
             Err(err) => (Vec::new(), Some(err)),
         };
@@ -3108,14 +3105,10 @@ fn load_chat(
 ) {
     spawn_local(async move {
         let result = if kind == "group" {
-            api_get(
-                "/message/get_group_msg.php",
-                json!({ "room_id": target_id }),
-            )
-            .await
+            api_get("/message/get_group_msg", json!({ "room_id": target_id })).await
         } else {
             api_get(
-                "/message/get_private_msg.php",
+                "/message/get_private_msg",
                 json!({ "friend_id": target_id, "last_id": 0 }),
             )
             .await
@@ -3143,13 +3136,13 @@ async fn mark_chat_read(kind: &str, target_id: i64, data: &Value) {
             .unwrap_or_default();
         if last_id > 0 {
             let _ = api_post(
-                "/message/mark_read.php",
+                "/message/mark_read",
                 json!({ "room_id": target_id, "last_msg_id": last_id }),
             )
             .await;
         }
     } else {
-        let _ = api_post("/message/mark_read.php", json!({ "friend_id": target_id })).await;
+        let _ = api_post("/message/mark_read", json!({ "friend_id": target_id })).await;
     }
 }
 
@@ -3161,7 +3154,7 @@ fn handle_friend_request(
 ) {
     spawn_local(async move {
         match api_post(
-            "/friend/handle_request.php",
+            "/friend/handle_request",
             json!({ "request_id": id, "action": action }),
         )
         .await
@@ -3183,7 +3176,7 @@ fn recover_friend(friend_id: i64, direct: bool, refresh: Callback<()>, status: R
         } else {
             json!({ "friend_id": friend_id, "message": "希望恢复好友关系" })
         };
-        match api_post("/friend/recover_friend.php", payload).await {
+        match api_post("/friend/recover_friend", payload).await {
             Ok(data) if is_success(&data) => {
                 status.set(message_of(&data, "已提交恢复请求"));
                 refresh.run(());
@@ -3198,7 +3191,7 @@ fn send_friend_request(uid: i64, refresh: Callback<()>, status: RwSignal<String>
     spawn_local(async move {
         status.set("正在发送好友请求...".into());
         match api_post(
-            "/friend/send_request.php",
+            "/friend/send_request",
             json!({ "to_uid": uid, "message": "请求添加你为好友" }),
         )
         .await
@@ -3402,7 +3395,7 @@ fn value_at_path<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
 fn open_public_group_detail(room_id: i64, status: RwSignal<String>) {
     spawn_local(async move {
         status.set("正在读取群组详情...".into());
-        match api_get("/group/get_group_view_info.php", json!({ "rid": room_id })).await {
+        match api_get("/group/get_group_view_info", json!({ "rid": room_id })).await {
             Ok(data) if is_success(&data) => match group_search_result(&data) {
                 Some(group) => {
                     if group.is_in_group {
@@ -3575,7 +3568,7 @@ fn apply_join_with_payload(
         if join_type == 4 {
             payload["answer"] = json!(answer.trim());
         }
-        match api_post("/group/apply_join.php", payload).await {
+        match api_post("/group/apply_join", payload).await {
             Ok(data) if is_success(&data) => {
                 status.set(message_of(&data, "已提交加入群组申请"));
                 if let Some(refresh) = refresh {
@@ -3603,7 +3596,7 @@ fn edit_group_info(
     spawn_local(async move {
         status.set("正在保存群组资料...".into());
         match api_post(
-            "/group/edit_info.php",
+            "/group/edit_info",
             json!({ "room_id": room_id, "action": action, "value": value }),
         )
         .await
@@ -3647,7 +3640,7 @@ fn update_group_settings(
         if !answer.trim().is_empty() {
             payload["answer"] = json!(answer.trim());
         }
-        match api_post("/group/update_settings.php", payload).await {
+        match api_post("/group/update_settings", payload).await {
             Ok(data) if is_success(&data) => {
                 status.set(message_of(&data, "群组设置已更新"));
                 refresh.run((room_id, room_name));
@@ -3693,7 +3686,7 @@ fn group_member_action(
 ) {
     let (path, payload) = match action {
         "mute" => (
-            "/group/mute_member.php",
+            "/group/mute_member",
             json!({
                 "room_id": room_id,
                 "target_uid": target_uid,
@@ -3702,7 +3695,7 @@ fn group_member_action(
             }),
         ),
         "unmute" => (
-            "/group/mute_member.php",
+            "/group/mute_member",
             json!({
                 "room_id": room_id,
                 "target_uid": target_uid,
@@ -3710,7 +3703,7 @@ fn group_member_action(
             }),
         ),
         "kick" => (
-            "/group/kick_member.php",
+            "/group/kick_member",
             json!({ "room_id": room_id, "target_uid": target_uid }),
         ),
         _ => {
@@ -3730,7 +3723,7 @@ fn group_admin_action(
     status: RwSignal<String>,
 ) {
     group_simple_action(
-        "/group/set_admin.php",
+        "/group/set_admin",
         json!({ "room_id": room_id, "target_uid": target_uid, "action": action }),
         "管理员设置已更新",
         refresh,
@@ -3748,7 +3741,7 @@ fn handle_group_apply(
     status: RwSignal<String>,
 ) {
     group_simple_action(
-        "/group/handle_apply.php",
+        "/group/handle_apply",
         json!({ "room_id": room_id, "apply_id": apply_id, "action": action }),
         "入群申请已处理",
         refresh,
@@ -3759,7 +3752,7 @@ fn handle_group_apply(
 
 fn mark_notice_read(id: i64, refresh: Callback<()>, status: RwSignal<String>) {
     spawn_local(async move {
-        match api_post("/user/mark_notice_read.php", json!({ "notice_id": id })).await {
+        match api_post("/user/mark_notice_read", json!({ "notice_id": id })).await {
             Ok(data) => status.set(message_of(&data, "已标记已读")),
             Err(err) => status.set(err),
         }
@@ -3769,7 +3762,7 @@ fn mark_notice_read(id: i64, refresh: Callback<()>, status: RwSignal<String>) {
 
 fn mark_all_read(refresh: Callback<()>, status: RwSignal<String>) {
     spawn_local(async move {
-        match api_post("/user/mark_notice_read.php", json!({ "read_all": "1" })).await {
+        match api_post("/user/mark_notice_read", json!({ "read_all": "1" })).await {
             Ok(data) => status.set(message_of(&data, "已全部标记为已读")),
             Err(err) => status.set(err),
         }
@@ -3960,7 +3953,7 @@ fn page_title(page: &Page) -> String {
 
 fn page_subtitle(page: &Page) -> &'static str {
     match page {
-        Page::Login | Page::Register => "连接到 CsAC 原站服务",
+        Page::Login | Page::Register => "连接到 UniCsAC 统一聊天服务",
         Page::Home => "好友、群组和请求集中管理",
         Page::PublicGroups => "浏览并申请加入公开群组",
         Page::Notices => "查看系统消息与未读提醒",

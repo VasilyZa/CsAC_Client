@@ -12,7 +12,7 @@ CsAC 桌面客户端，使用 Tauri + Leptos + Rust 构建。
 - 用户和群组举报
 - 账户资料管理、头像上传、密码更新
 - 浅色 / 深色模式
-- 适配 CsAC / cschat 当前线上接口
+- 适配 UniCsAC 统一后端 API
 
 ## 本地开发
 
@@ -20,6 +20,22 @@ CsAC 桌面客户端，使用 Tauri + Leptos + Rust 构建。
 rustup target add wasm32-unknown-unknown
 cargo install trunk tauri-cli
 cargo tauri dev
+```
+
+客户端请求只走统一入口：
+
+```text
+https://cschat.ccccocccc.cc/rpc/UniCsAC.php?route=...
+https://csac.ccccocccc.cc/rpc/UniCsAC.php?route=...
+```
+
+旧的散文件入口、`web/rpc`、`rpc.php`、`x.php` 和 `.php` 后缀 route 不再作为客户端 fallback。
+
+常用检查：
+
+```bash
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo check --target wasm32-unknown-unknown
 ```
 
 ## 构建 Windows 安装程序
