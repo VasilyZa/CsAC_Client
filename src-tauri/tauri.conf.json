@@ -27,6 +27,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": {
+      "webview2-fixed-runtime/x64": "webview2-fixed-runtime/x64"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -35,6 +38,10 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "fixedRuntime",
+        "path": "webview2-fixed-runtime/x64"
+      },
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "uninstallerIcon": "icons/icon.ico"

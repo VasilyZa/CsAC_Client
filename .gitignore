@@ -3,5 +3,6 @@
 /release-assets/
 /.agents/
 /.codex/
+/src-tauri/webview2-fixed-runtime/
 /cschat源码/
 /目前网站源码/

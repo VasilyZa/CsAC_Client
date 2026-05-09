@@ -45,8 +45,11 @@ Arch Linux 交叉编译依赖：
 ```bash
 sudo pacman -S mingw-w64-gcc nsis
 rustup target add x86_64-pc-windows-gnu
+scripts/prepare-webview2-runtime.sh
 cargo tauri build --target x86_64-pc-windows-gnu
 ```
+
+NSIS 安装程序会内置 Microsoft WebView2 Fixed Version Runtime x64，不再依赖用户系统自带 WebView2 是否可用。
 
 产物路径：
 

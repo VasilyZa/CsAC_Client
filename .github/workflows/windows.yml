@@ -17,7 +17,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y nsis mingw-w64
+          sudo apt-get install -y p7zip-full nsis mingw-w64
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -34,6 +34,9 @@ jobs:
         run: |
           cargo install trunk --locked
           cargo install tauri-cli --locked
+
+      - name: Prepare bundled WebView2 runtime
+        run: scripts/prepare-webview2-runtime.sh
 
       - name: Build Windows installer
         run: cargo tauri build --target x86_64-pc-windows-gnu
